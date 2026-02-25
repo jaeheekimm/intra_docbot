@@ -169,6 +169,12 @@ def main() -> None:
         texts.append(text)
         metadatas.append(md)
 
+    # ⭐ 여기 추가
+    if not texts:
+        raise RuntimeError(
+            f"BM25용 텍스트가 0개입니다. JSONL={JSONL_PATH} / docs={len(docs)} / chunks={len(chunks)}"
+        )
+
     tokenized = [tokenize(t) for t in texts]
     bm25 = BM25Okapi(tokenized)
 

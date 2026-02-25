@@ -16,15 +16,16 @@ from src.chains.rag_chain import get_rag_chain
 
 load_dotenv()
 
-# ⭐ Streamlit Cloud 데모용: /tmp에 저장 (재시작되면 재생성될 수 있음)
-os.environ.setdefault("DATA_DIR", "/tmp/data")
-os.environ.setdefault("JSONL_PATH", "/tmp/parsed_documents.jsonl")
-os.environ.setdefault("OUT_IMG_DIR", "/tmp/extracted_images")
-os.environ.setdefault("OUT_IMG_MANIFEST", "/tmp/image_manifest.json")
+# 입력(문서): GitHub에 올린 ./data 폴더를 읽는다
+os.environ["DATA_DIR"] = "./data"
 
-os.environ.setdefault("CHROMA_DIR", "/tmp/chroma_db")
-os.environ.setdefault("BM25_PATH", "/tmp/bm25_index.pkl")
-os.environ.setdefault("CHROMA_COLLECTION", "intra_docs")
+# 출력(중간 결과/인덱스): /tmp에 만든다
+os.environ["JSONL_PATH"] = "/tmp/parsed_documents.jsonl"
+os.environ["OUT_IMG_DIR"] = "/tmp/extracted_images"
+os.environ["OUT_IMG_MANIFEST"] = "/tmp/image_manifest.json"
+os.environ["CHROMA_DIR"] = "/tmp/chroma_db"
+os.environ["BM25_PATH"] = "/tmp/bm25_index.pkl"
+os.environ["CHROMA_COLLECTION"] = "intra_docs"
 
 
 def ensure_indexes():
