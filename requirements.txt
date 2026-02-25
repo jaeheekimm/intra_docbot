@@ -73,3 +73,6 @@ mypy==1.15.0
 pinecone==5.4.2
 wikipedia==1.4.0
 scikit-learn==1.6.1 
+
+openpyxl
+python-pptx
