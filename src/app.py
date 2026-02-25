@@ -1,8 +1,9 @@
 # src/app.py
 import os
 import sys
-from typing import Any, Dict, List, Optional
-
+from pathlib import Path
+import subprocess
+from typing import Any, Dict, List
 
 # ★ 먼저 경로부터 잡고
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,13 +14,7 @@ from dotenv import load_dotenv
 
 from src.chains.rag_chain import get_rag_chain
 
-# # 프로젝트 루트 import 보정(기존 유지)
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 load_dotenv()
-
-from pathlib import Path
-import subprocess
 
 # ⭐ Streamlit Cloud 데모용: /tmp에 저장 (재시작되면 재생성될 수 있음)
 os.environ.setdefault("DATA_DIR", "/tmp/data")
@@ -39,10 +34,12 @@ def ensure_indexes():
     if chroma_dir.exists() and bm25_path.exists():
         return
 
-    # 없으면 1~3 자동 실행
-    subprocess.run(["python", "-m", "src.pipeline.extract"], check=True)
-    subprocess.run(["python", "-m", "src.pipeline.ingest_chroma"], check=True)
-    subprocess.run(["python", "-m", "src.pipeline.bm25_index"], check=True)
+    # ⭐ Streamlit이 실행 중인 동일한 Python(venv)로 실행해야 requirements가 적용됨
+    python_exec = sys.executable
+
+    subprocess.run([python_exec, "-m", "src.pipeline.extract"], check=True)
+    subprocess.run([python_exec, "-m", "src.pipeline.ingest_chroma"], check=True)
+    subprocess.run([python_exec, "-m", "src.pipeline.bm25_index"], check=True)
 
 
 ensure_indexes()
@@ -98,7 +95,6 @@ with st.sidebar:
 
 @st.cache_resource
 def get_chain_cached(_top_k: int, _dense_k: int, _bm25_k: int, _alpha: float):
-    # rag_chain.py (streaming 지원 버전)
     return get_rag_chain(top_k=_top_k, dense_k=_dense_k, bm25_k=_bm25_k, alpha=_alpha)
 
 
@@ -108,7 +104,6 @@ def get_chain_cached(_top_k: int, _dense_k: int, _bm25_k: int, _alpha: float):
 def _build_recent_history_text(messages: List[Dict[str, Any]], pairs: int) -> str:
     if pairs <= 0:
         return ""
-    # 최근 pairs쌍 = 마지막 2*pairs 메시지 (user/assistant가 번갈아 저장된다는 가정)
     recent = messages[-2 * pairs :]
     lines: List[str] = []
     for m in recent:
@@ -178,18 +173,13 @@ for msg in st.session_state["messages"]:
 user_input = st.chat_input("질문을 입력해 (예: 휴가 신청은 어디서 어떻게 해?)")
 
 if user_input:
-    # 1) 유저 메시지 저장 + 출력
     st.session_state["messages"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
-    # 2) 체인 준비(캐시)
     chain = get_chain_cached(top_k, dense_k, bm25_k, alpha)
-
-    # 3) 최근 대화 + 지침 + 현재질문 합쳐서 질의 생성
     query = _compose_query(user_input)
 
-    # 4) 스트리밍 출력
     with st.chat_message("assistant"):
         placeholder = st.empty()
         answer_accum = ""
@@ -206,7 +196,6 @@ if user_input:
                     part = chunk["answer"]
 
                     if isinstance(part, str):
-                        # ✅ 누적 문자열로 오면 교체, 증분(한 글자/토큰)으로 오면 이어붙이기
                         if len(part) >= len(answer_accum):
                             answer_accum = part
                         else:
@@ -218,7 +207,6 @@ if user_input:
             placeholder.error(f"에러: {repr(e)}")
             st.stop()
 
-        # ✅ 스트리밍 끝난 뒤 sources/hits는 마지막 chunk에서 꺼내기
         sources = (last_chunk or {}).get("sources") or []
         hits = (last_chunk or {}).get("hits") or []
 
@@ -237,9 +225,6 @@ if user_input:
                     )
                     st.write((h.get("text") or "")[:800])
 
-    # 그리고 이 블록 아래에 있는 assistant 메시지 저장은
-    # answer_accum / sources / hits 그대로 쓰면 됨.
-    # 6) 어시스턴트 메시지 저장(출처/hits 포함)
     st.session_state["messages"].append(
         {
             "role": "assistant",
