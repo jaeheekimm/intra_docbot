@@ -190,87 +190,67 @@ for msg in st.session_state["messages"]:
 user_input = st.chat_input("질문을 입력해")
 
 if user_input:
+    # (1) user 메시지 출력/저장
     st.session_state["messages"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
+    # (2) retrieve/answer 준비
     retrieve_r, answer_r = get_rag_parts(
-        top_k=top_k,
-        dense_k=dense_k,
-        bm25_k=bm25_k,
-        alpha=alpha,
+        top_k=top_k, dense_k=dense_k, bm25_k=bm25_k, alpha=alpha
     )
-
     query = _compose_query(user_input)
 
-    # ⭐ 1️⃣ 검색 한 번만
+    # (3) hits 생성 (여기서 hits가 정의됨)
     state = retrieve_r.invoke(query)
     hits = state.get("hits", [])
 
-    # ⭐ 출처 생성 (파일명_페이지)
-    sources = []
-    for h in hits:
-        md = h.get("metadata", {}) or {}
-        file_name = md.get("file_name", "unknown")
-        page = md.get("page", "")
-        sources.append(f"{file_name}_{page}")
-
-    sources = list(dict.fromkeys(sources))
-
-    # ⭐ 2️⃣ LLM만 stream
+    # (4) 답변(말풍선 안)
     with st.chat_message("assistant"):
         placeholder = st.empty()
         answer_accum = ""
-
         for part in answer_r.stream(state):
             if isinstance(part, str) and part:
                 answer_accum += part
                 placeholder.markdown(answer_accum)
 
-if hits:
-    tabs = st.tabs(["출처", "Top-K 원문"])
+    # (5) ✅ 말풍선 밖: hits 있을 때만 탭 출력
+    if hits:
+        tabs = st.tabs(["출처", "Top-K 원문"])
+        with tabs[0]:
+            st.markdown("**출처**")
+            seen = set()
+            for h in hits:
+                md = h.get("metadata", {}) or {}
+                file_name = md.get("file_name") or md.get("source") or "unknown"
+                page = md.get("page")
+                key = (file_name, page)
+                if key in seen:
+                    continue
+                seen.add(key)
+                st.write(
+                    f"- {file_name}"
+                    + (f" / p.{page}" if page not in (None, "") else "")
+                )
 
-    # 출처 탭
-    with tabs[0]:
-        st.markdown("**출처**")
-        seen = set()
-        for h in hits:
-            md = h.get("metadata", {}) or {}
-            file_name = md.get("file_name") or md.get("source") or "unknown"
-            page = md.get("page")
-            key = (file_name, page)
-            if key in seen:
-                continue
-            seen.add(key)
+        with tabs[1]:
+            for i, h in enumerate(hits, 1):
+                md = h.get("metadata", {}) or {}
+                file_name = md.get("file_name") or md.get("source") or "unknown"
+                page = md.get("page")
+                title = f"#{i} {file_name}" + (
+                    f" / p.{page}" if page not in (None, "") else ""
+                )
+                st.markdown(f"**{title}**")
+                st.text_area(
+                    label=f"hit_{i}",
+                    value=(h.get("text") or "").strip(),
+                    height=180,
+                    key=f"hit_text_{i}",
+                )
+                st.divider()
 
-            if page not in (None, ""):
-                st.write(f"- {file_name} / p.{page}")
-            else:
-                st.write(f"- {file_name}")
-
-    # Top-K 탭 (expander 없이 안전하게)
-    with tabs[1]:
-        for i, h in enumerate(hits, 1):
-            md = h.get("metadata", {}) or {}
-            file_name = md.get("file_name") or md.get("source") or "unknown"
-            page = md.get("page")
-            title = f"#{i} {file_name}" + (
-                f" / p.{page}" if page not in (None, "") else ""
-            )
-
-            st.markdown(f"**{title}**")
-            st.text_area(
-                label=f"hit_{i}",
-                value=(h.get("text") or "").strip(),
-                height=180,
-                key=f"hit_text_{i}",
-            )
-            st.divider()
-
+    # (6) assistant 메시지 저장
     st.session_state["messages"].append(
-        {
-            "role": "assistant",
-            "content": answer_accum.strip(),
-            "hits": hits,
-        }
+        {"role": "assistant", "content": answer_accum.strip(), "hits": hits}
     )
