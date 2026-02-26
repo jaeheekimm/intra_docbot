@@ -181,8 +181,8 @@ def _render_sources_and_hits(msg: Dict[str, Any]):
 for msg in st.session_state["messages"]:
     with st.chat_message("user" if msg["role"] == "user" else "assistant"):
         st.write(msg["content"])
-        if msg["role"] == "assistant":
-            _render_sources_and_hits(msg)
+        # if msg["role"] == "assistant":
+        #     _render_sources_and_hits(msg)
 
 
 # -----------------------------
@@ -207,7 +207,6 @@ if user_input:
     # ⭐ 1️⃣ 검색 한 번만
     state = retrieve_r.invoke(query)
     hits = state.get("hits", [])
-    st.write(hits[0]["metadata"] if hits else "hits 없음")
 
     # ⭐ 출처 생성 (파일명_페이지)
     sources = []
@@ -228,10 +227,40 @@ if user_input:
             if isinstance(part, str) and part:
                 answer_accum += part
                 placeholder.markdown(answer_accum)
+        # ✅ 답변 끝난 뒤: 출처(파일/페이지)만 출력
+        if hits:
+            st.markdown("**출처**")
+            seen = set()
+            for h in hits:
+                md = h.get("metadata", {}) or {}
+                file_name = md.get("file_name") or "unknown"
+                page = md.get("page")
+                key = (file_name, page)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                if page not in (None, ""):
+                    st.write(f"- {file_name} / p.{page}")
+                else:
+                    st.write(f"- {file_name}")
+
+            # ✅ Top-K 원문 (열고/닫기)
+            with st.expander("Top-K 원문 보기", expanded=False):
+                for i, h in enumerate(hits, 1):
+                    md = h.get("metadata", {}) or {}
+                    file_name = md.get("file_name") or "unknown"
+                    page = md.get("page")
+                    title = f"#{i} {file_name}" + (
+                        f" / p.{page}" if page not in (None, "") else ""
+                    )
+                    with st.expander(title, expanded=False):
+                        st.write((h.get("text") or "").strip())
 
     st.session_state["messages"].append(
         {
             "role": "assistant",
             "content": answer_accum.strip(),
+            "hits": hits,
         }
     )
