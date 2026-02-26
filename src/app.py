@@ -180,8 +180,45 @@ def _render_sources_and_hits(msg: Dict[str, Any]):
 for msg in st.session_state["messages"]:
     with st.chat_message("user" if msg["role"] == "user" else "assistant"):
         st.write(msg["content"])
-        # if msg["role"] == "assistant":
-        #     _render_sources_and_hits(msg)
+
+    # ⭐ 말풍선 밖에서 출처/Top-K 출력
+    if msg["role"] == "assistant" and msg.get("hits"):
+        hits = msg["hits"]
+
+        tabs = st.tabs(["출처", "Top-K 원문"])
+
+        with tabs[0]:
+            st.markdown("**출처**")
+            seen = set()
+            for h in hits:
+                md = h.get("metadata", {}) or {}
+                file_name = md.get("file_name") or md.get("source") or "unknown"
+                page = md.get("page")
+                key = (file_name, page)
+                if key in seen:
+                    continue
+                seen.add(key)
+                st.write(
+                    f"- {file_name}"
+                    + (f" / p.{page}" if page not in (None, "") else "")
+                )
+
+        with tabs[1]:
+            for i, h in enumerate(hits, 1):
+                md = h.get("metadata", {}) or {}
+                file_name = md.get("file_name") or md.get("source") or "unknown"
+                page = md.get("page")
+                title = f"#{i} {file_name}" + (
+                    f" / p.{page}" if page not in (None, "") else ""
+                )
+                st.markdown(f"**{title}**")
+                st.text_area(
+                    label=f"hit_{i}",
+                    value=(h.get("text") or "").strip(),
+                    height=180,
+                    key=f"history_hit_{id(h)}",
+                )
+                st.divider()
 
 
 # -----------------------------
