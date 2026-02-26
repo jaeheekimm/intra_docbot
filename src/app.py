@@ -163,7 +163,6 @@ def _render_sources_and_hits(msg: Dict[str, Any]):
                     st.write(f"- {file_name}")
 
     with tabs[1]:
-        # with st.expander("Top-K 원문 열기", expanded=False):
         for i, h in enumerate(hits, 1):
             md = h.get("metadata", {}) or {}
             file_name = md.get("file_name") or md.get("source") or "unknown"
