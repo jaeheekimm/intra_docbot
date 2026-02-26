@@ -17,13 +17,13 @@ os.environ["CHROMA_DIR"] = "/tmp/chroma_db"
 os.environ["BM25_PATH"] = "/tmp/bm25_index.pkl"
 os.environ["CHROMA_COLLECTION"] = "intra_docs"
 
-# 3) 그 다음 라이브러리 import
+# 3) 라이브러리 import
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.chains.rag_chain import get_rag_chain
+from src.chains.rag_chain import get_rag_parts
 
 
 def ensure_indexes():
@@ -33,7 +33,6 @@ def ensure_indexes():
     if chroma_dir.exists() and bm25_path.exists():
         return
 
-    # ⭐ Streamlit이 실행 중인 동일한 Python(venv)로 실행해야 requirements가 적용됨
     python_exec = sys.executable
 
     subprocess.run([python_exec, "-m", "src.pipeline.extract"], check=True)
@@ -51,18 +50,17 @@ st.title("Intra DocBot (PoC)")
 # Session state 초기화
 # -----------------------------
 if "messages" not in st.session_state:
-    # 각 원소: {"role": "user"|"assistant", "content": str, "sources": [...], "hits": [...]}
     st.session_state["messages"] = []
 
 if "user_prompt" not in st.session_state:
     st.session_state["user_prompt"] = "답변은 친절하게, 사실만. 줄바꿈 깔끔하게"
 
 if "history_pairs" not in st.session_state:
-    st.session_state["history_pairs"] = 3  # 최근 3쌍(=6개 메시지)
+    st.session_state["history_pairs"] = 3
 
 
 # -----------------------------
-# Sidebar (설정 UI)
+# Sidebar
 # -----------------------------
 with st.sidebar:
     st.header("검색 설정")
@@ -83,7 +81,6 @@ with st.sidebar:
         "추가 지침(선택)",
         value=st.session_state["user_prompt"],
         height=120,
-        help="이 지침을 질문에 함께 붙여서 모델이 따르도록 유도합니다.",
     )
 
     st.divider()
@@ -92,13 +89,8 @@ with st.sidebar:
         st.success("초기화 완료")
 
 
-@st.cache_resource
-def get_chain_cached(_top_k: int, _dense_k: int, _bm25_k: int, _alpha: float):
-    return get_rag_chain(top_k=_top_k, dense_k=_dense_k, bm25_k=_bm25_k, alpha=_alpha)
-
-
 # -----------------------------
-# Util: 최근 대화 -> 문자열
+# Util
 # -----------------------------
 def _build_recent_history_text(messages: List[Dict[str, Any]], pairs: int) -> str:
     if pairs <= 0:
@@ -136,9 +128,6 @@ def _compose_query(user_input: str) -> str:
     return "\n\n".join(parts).strip()
 
 
-# -----------------------------
-# 기존 대화 출력 (채팅 UI)
-# -----------------------------
 def _render_sources_and_hits(msg: Dict[str, Any]):
     sources = msg.get("sources") or []
     hits = msg.get("hits") or []
@@ -154,11 +143,14 @@ def _render_sources_and_hits(msg: Dict[str, Any]):
                 md = h.get("metadata", {}) or {}
                 st.markdown(
                     f"**#{i} {md.get('file_name','')}** "
-                    f"(score={float(h.get('score',0)):.3f}, dense={float(h.get('dense',0)):.3f}, bm25={float(h.get('bm25',0)):.3f})"
+                    f"(score={float(h.get('score',0)):.3f})"
                 )
                 st.write((h.get("text") or "")[:800])
 
 
+# -----------------------------
+# 기존 대화 출력
+# -----------------------------
 for msg in st.session_state["messages"]:
     with st.chat_message("user" if msg["role"] == "user" else "assistant"):
         st.write(msg["content"])
@@ -167,62 +159,53 @@ for msg in st.session_state["messages"]:
 
 
 # -----------------------------
-# 입력 -> 스트리밍 응답
+# 입력 → 검색 1번 → LLM Stream → 출처 출력
 # -----------------------------
-user_input = st.chat_input("질문을 입력해 (예: 휴가 신청은 어디서 어떻게 해?)")
+user_input = st.chat_input("질문을 입력해")
 
 if user_input:
     st.session_state["messages"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
-    chain = get_chain_cached(top_k, dense_k, bm25_k, alpha)
+    retrieve_r, answer_r = get_rag_parts(
+        top_k=top_k,
+        dense_k=dense_k,
+        bm25_k=bm25_k,
+        alpha=alpha,
+    )
+
     query = _compose_query(user_input)
 
+    # ⭐ 1️⃣ 검색 한 번만
+    state = retrieve_r.invoke(query)
+    hits = state.get("hits", [])
+
+    # ⭐ 출처 생성 (파일명_페이지)
+    sources = []
+    for h in hits:
+        md = h.get("metadata", {}) or {}
+        file_name = md.get("file_name", "unknown")
+        page = md.get("page", "")
+        sources.append(f"{file_name}_{page}")
+
+    sources = list(dict.fromkeys(sources))
+
+    # ⭐ 2️⃣ LLM만 stream
     with st.chat_message("assistant"):
         placeholder = st.empty()
         answer_accum = ""
-        last_chunk = None
 
-        try:
-            for chunk in chain.stream(query):
-                if not isinstance(chunk, dict):
-                    continue
+        for part in answer_r.stream(state):
+            if isinstance(part, str) and part:
+                answer_accum += part
+                placeholder.markdown(answer_accum)
 
-                last_chunk = chunk
-
-                if "answer" in chunk and chunk["answer"] is not None:
-                    part = chunk["answer"]
-
-                    if isinstance(part, str):
-                        if len(part) >= len(answer_accum):
-                            answer_accum = part
-                        else:
-                            answer_accum += part
-
-                        placeholder.markdown(answer_accum)
-
-        except Exception as e:
-            placeholder.error(f"에러: {repr(e)}")
-            st.stop()
-
-        sources = (last_chunk or {}).get("sources") or []
-        hits = (last_chunk or {}).get("hits") or []
-
+        # ⭐ 3️⃣ stream 끝난 후 출처 출력
         if sources:
             st.markdown("**출처**")
             for s in sources:
                 st.write(f"- {s}")
-
-        if hits:
-            with st.expander("검색된 컨텍스트(상위)"):
-                for i, h in enumerate(hits, 1):
-                    md = h.get("metadata", {}) or {}
-                    st.markdown(
-                        f"**#{i} {md.get('file_name','')}** "
-                        f"(score={float(h.get('score',0)):.3f}, dense={float(h.get('dense',0)):.3f}, bm25={float(h.get('bm25',0)):.3f})"
-                    )
-                    st.write((h.get("text") or "")[:800])
 
     st.session_state["messages"].append(
         {
