@@ -163,16 +163,16 @@ def _render_sources_and_hits(msg: Dict[str, Any]):
                     st.write(f"- {file_name}")
 
     with tabs[1]:
-        with st.expander("Top-K 원문 열기", expanded=False):
-            for i, h in enumerate(hits, 1):
-                md = h.get("metadata", {}) or {}
-                file_name = md.get("file_name") or md.get("source") or "unknown"
-                page = md.get("page")
-                title = f"#{i} {file_name}" + (
-                    f" / p.{page}" if page not in (None, "") else ""
-                )
-                with st.expander(title, expanded=False):
-                    st.write((h.get("text") or "").strip())
+        # with st.expander("Top-K 원문 열기", expanded=False):
+        for i, h in enumerate(hits, 1):
+            md = h.get("metadata", {}) or {}
+            file_name = md.get("file_name") or md.get("source") or "unknown"
+            page = md.get("page")
+            title = f"#{i} {file_name}" + (
+                f" / p.{page}" if page not in (None, "") else ""
+            )
+            with st.expander(title, expanded=False):
+                st.write((h.get("text") or "").strip())
 
 
 # -----------------------------
