@@ -1,6 +1,7 @@
 import os, sys
 from pathlib import Path
 import subprocess
+from typing import Any, Dict, List
 
 # 1) 경로 먼저
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
