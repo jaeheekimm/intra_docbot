@@ -129,23 +129,50 @@ def _compose_query(user_input: str) -> str:
 
 
 def _render_sources_and_hits(msg: Dict[str, Any]):
-    sources = msg.get("sources") or []
     hits = msg.get("hits") or []
+    if not hits:
+        return
 
-    if sources:
-        st.markdown("**출처**")
-        for s in sources:
-            st.write(f"- {s}")
+    # 1) 출처(파일/페이지) 만들기: 파일별 페이지 모으기
+    grouped: Dict[str, set] = {}
+    for h in hits:
+        md = h.get("metadata", {}) or {}
+        file_name = md.get("file_name") or md.get("source") or "unknown"
+        page = md.get("page")
+        grouped.setdefault(file_name, set())
+        if page is not None and page != "":
+            grouped[file_name].add(page)
 
-    if hits:
-        with st.expander("검색된 컨텍스트(상위)"):
+    # 보기 좋게 정렬
+    sources_view = []
+    for file_name in sorted(grouped.keys()):
+        pages = sorted(list(grouped[file_name]))
+        if pages:
+            sources_view.append((file_name, pages))
+        else:
+            sources_view.append((file_name, []))
+
+    tabs = st.tabs(["출처(파일/페이지)", "Top-K 원문"])
+
+    with tabs[0]:
+        with st.expander("출처 열기", expanded=False):
+            for file_name, pages in sources_view:
+                if pages:
+                    st.write(f"- {file_name} / p. {', '.join(map(str, pages))}")
+                else:
+                    st.write(f"- {file_name}")
+
+    with tabs[1]:
+        with st.expander("Top-K 원문 열기", expanded=False):
             for i, h in enumerate(hits, 1):
                 md = h.get("metadata", {}) or {}
-                st.markdown(
-                    f"**#{i} {md.get('file_name','')}** "
-                    f"(score={float(h.get('score',0)):.3f})"
+                file_name = md.get("file_name") or md.get("source") or "unknown"
+                page = md.get("page")
+                title = f"#{i} {file_name}" + (
+                    f" / p.{page}" if page not in (None, "") else ""
                 )
-                st.write((h.get("text") or "")[:800])
+                with st.expander(title, expanded=False):
+                    st.write((h.get("text") or "").strip())
 
 
 # -----------------------------
@@ -180,6 +207,7 @@ if user_input:
     # ⭐ 1️⃣ 검색 한 번만
     state = retrieve_r.invoke(query)
     hits = state.get("hits", [])
+    st.write(hits[0]["metadata"] if hits else "hits 없음")
 
     # ⭐ 출처 생성 (파일명_페이지)
     sources = []
@@ -201,17 +229,9 @@ if user_input:
                 answer_accum += part
                 placeholder.markdown(answer_accum)
 
-        # ⭐ 3️⃣ stream 끝난 후 출처 출력
-        if sources:
-            st.markdown("**출처**")
-            for s in sources:
-                st.write(f"- {s}")
-
     st.session_state["messages"].append(
         {
             "role": "assistant",
             "content": answer_accum.strip(),
-            "sources": sources,
-            "hits": hits,
         }
     )
