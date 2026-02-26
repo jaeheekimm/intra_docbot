@@ -3,29 +3,23 @@ import os
 import sys
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, List
 
-# ★ 먼저 경로부터 잡고
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
-
-import streamlit as st
-from dotenv import load_dotenv
-
-from src.chains.rag_chain import get_rag_chain
-
-load_dotenv()
-
-# 입력(문서): GitHub에 올린 ./data 폴더를 읽는다
+# ⭐ 제일 먼저 ENV부터 세팅
 os.environ["DATA_DIR"] = "./data"
-
-# 출력(중간 결과/인덱스): /tmp에 만든다
 os.environ["JSONL_PATH"] = "/tmp/parsed_documents.jsonl"
 os.environ["OUT_IMG_DIR"] = "/tmp/extracted_images"
 os.environ["OUT_IMG_MANIFEST"] = "/tmp/image_manifest.json"
 os.environ["CHROMA_DIR"] = "/tmp/chroma_db"
 os.environ["BM25_PATH"] = "/tmp/bm25_index.pkl"
 os.environ["CHROMA_COLLECTION"] = "intra_docs"
+
+# 그 다음에 나머지 import
+import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from src.chains.rag_chain import get_rag_chain
 
 
 def ensure_indexes():
