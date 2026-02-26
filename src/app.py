@@ -1,10 +1,13 @@
-# src/app.py
-import os
-import sys
+import os, sys
 from pathlib import Path
 import subprocess
 
-# ⭐ 제일 먼저 ENV부터 세팅
+# 1) 경로 먼저
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# 2) ENV 먼저
 os.environ["DATA_DIR"] = "./data"
 os.environ["JSONL_PATH"] = "/tmp/parsed_documents.jsonl"
 os.environ["OUT_IMG_DIR"] = "/tmp/extracted_images"
@@ -13,7 +16,7 @@ os.environ["CHROMA_DIR"] = "/tmp/chroma_db"
 os.environ["BM25_PATH"] = "/tmp/bm25_index.pkl"
 os.environ["CHROMA_COLLECTION"] = "intra_docs"
 
-# 그 다음에 나머지 import
+# 3) 그 다음 라이브러리 import
 import streamlit as st
 from dotenv import load_dotenv
 
