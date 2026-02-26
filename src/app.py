@@ -226,35 +226,46 @@ if user_input:
             if isinstance(part, str) and part:
                 answer_accum += part
                 placeholder.markdown(answer_accum)
-        # ✅ 답변 끝난 뒤: 출처(파일/페이지)만 출력
-        if hits:
-            st.markdown("**출처**")
-            seen = set()
-            for h in hits:
-                md = h.get("metadata", {}) or {}
-                file_name = md.get("file_name") or "unknown"
-                page = md.get("page")
-                key = (file_name, page)
-                if key in seen:
-                    continue
-                seen.add(key)
 
-                if page not in (None, ""):
-                    st.write(f"- {file_name} / p.{page}")
-                else:
-                    st.write(f"- {file_name}")
+if hits:
+    tabs = st.tabs(["출처", "Top-K 원문"])
 
-            # ✅ Top-K 원문 (열고/닫기)
-            with st.expander("Top-K 원문 보기", expanded=False):
-                for i, h in enumerate(hits, 1):
-                    md = h.get("metadata", {}) or {}
-                    file_name = md.get("file_name") or "unknown"
-                    page = md.get("page")
-                    title = f"#{i} {file_name}" + (
-                        f" / p.{page}" if page not in (None, "") else ""
-                    )
-                    with st.expander(title, expanded=False):
-                        st.write((h.get("text") or "").strip())
+    # 출처 탭
+    with tabs[0]:
+        st.markdown("**출처**")
+        seen = set()
+        for h in hits:
+            md = h.get("metadata", {}) or {}
+            file_name = md.get("file_name") or md.get("source") or "unknown"
+            page = md.get("page")
+            key = (file_name, page)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if page not in (None, ""):
+                st.write(f"- {file_name} / p.{page}")
+            else:
+                st.write(f"- {file_name}")
+
+    # Top-K 탭 (expander 없이 안전하게)
+    with tabs[1]:
+        for i, h in enumerate(hits, 1):
+            md = h.get("metadata", {}) or {}
+            file_name = md.get("file_name") or md.get("source") or "unknown"
+            page = md.get("page")
+            title = f"#{i} {file_name}" + (
+                f" / p.{page}" if page not in (None, "") else ""
+            )
+
+            st.markdown(f"**{title}**")
+            st.text_area(
+                label=f"hit_{i}",
+                value=(h.get("text") or "").strip(),
+                height=180,
+                key=f"hit_text_{i}",
+            )
+            st.divider()
 
     st.session_state["messages"].append(
         {
