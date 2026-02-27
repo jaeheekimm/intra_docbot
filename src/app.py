@@ -233,7 +233,7 @@ def _stream_and_render(answer_r, state) -> str:
 def _render_hits_expander(hits: list, key_prefix: str):
     if not hits:
         return
-    with st.expander("📃", expanded=False):
+    with st.expander("출처 및 원문", expanded=False):
         tabs = st.tabs(["출처", "원문"])
         with tabs[0]:
             seen = set()
