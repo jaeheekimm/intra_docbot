@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.chains.rag_chain import get_rag_parts
+from src.chains.rag_chain import get_rag_parts, filter_sources_by_similarity
 import base64
 
 
@@ -162,6 +162,9 @@ with st.sidebar:
         height=120,
     )
     st.divider()
+    st.header("출처 설정")
+    source_threshold = st.slider("출처 유사도 기준", 0.10, 0.90, 0.45, 0.05)
+    st.divider()
     if st.button("대화내용 초기화"):
         st.session_state["messages"].clear()
         st.success("초기화 완료")
@@ -230,33 +233,44 @@ def _stream_and_render(answer_r, state) -> str:
     return answer_accum
 
 
-def _render_hits_expander(hits: list, key_prefix: str):
-    if not hits:
+def _render_hits_expander(filtered_hits: list, all_hits: list, key_prefix: str):
+    if not all_hits:
         return
     with st.expander("출처 및 원문", expanded=False):
         tabs = st.tabs(["출처", "원문"])
         with tabs[0]:
-            seen = set()
-            for h in hits:
-                md = h.get("metadata", {}) or {}
-                file_name = md.get("file_name") or md.get("source") or "unknown"
-                page = md.get("page")
-                key = (file_name, page)
-                if key in seen:
-                    continue
-                seen.add(key)
-                st.write(
-                    f"- {file_name}"
-                    + (f" / p.{page}" if page not in (None, "") else "")
-                )
+            if not filtered_hits:
+                st.caption("이 답변에 직접 활용된 출처 문서가 없습니다.")
+            else:
+                # 유사도 필터링된 hits만 출처로 표시
+                seen = set()
+                for h in filtered_hits:
+                    md = h.get("metadata", {}) or {}
+                    file_name = md.get("file_name") or md.get("source") or "unknown"
+                    page = md.get("page")
+                    score = h.get("similarity_score")
+                    key = (file_name, page)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    score_str = f" (유사도: {score})" if score is not None else ""
+                    st.write(
+                        f"- {file_name}"
+                        + (f" / p.{page}" if page not in (None, "") else "")
+                        + score_str
+                    )
         with tabs[1]:
-            for j, h in enumerate(hits, 1):
+            for j, h in enumerate(all_hits, 1):
                 md = h.get("metadata", {}) or {}
                 file_name = md.get("file_name") or md.get("source") or "unknown"
                 page = md.get("page")
-                title = f"#{j} {file_name}" + (
-                    f" / p.{page}" if page not in (None, "") else ""
-                )
+                score = h.get("similarity_score")
+                score_str = f" (유사도: {score})" if score is not None else ""
+                title = (
+                    f"#{j} {file_name}"
+                    + (f" / p.{page}" if page not in (None, "") else "")
+                    + score_str
+                )  # ← 추가
                 st.markdown(f"**{title}**")
                 st.text_area(
                     label=f"hit_{j}",
@@ -282,7 +296,9 @@ while i < len(messages):
         if assistant_msg:
             _render_ai_bubble(assistant_msg["content"])
             _render_hits_expander(
-                assistant_msg.get("hits") or [], key_prefix=f"history_{i}"
+                assistant_msg.get("filtered_hits") or [],
+                assistant_msg.get("hits") or [],
+                key_prefix=f"history_{i}",
             )
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -308,9 +324,17 @@ if user_input:
 
     answer_accum = _stream_and_render(answer_r, state)
 
-    st.session_state["messages"].append(
-        {"role": "assistant", "content": answer_accum.strip(), "hits": hits}
+    # 출처용: 유사도 필터링된 hits
+    filtered_hits, scored_hits = filter_sources_by_similarity(
+        answer_accum, hits, threshold=source_threshold
     )
-    _render_hits_expander(hits, key_prefix="new_hits")
-    st.markdown("</div>", unsafe_allow_html=True)
-    # st.rerun() 없음
+
+    st.session_state["messages"].append(
+        {
+            "role": "assistant",
+            "content": answer_accum.strip(),
+            "hits": scored_hits,  # score 붙은 전체
+            "filtered_hits": filtered_hits,
+        }
+    )
+    _render_hits_expander(filtered_hits, scored_hits, key_prefix="new_hits")
