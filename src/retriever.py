@@ -100,7 +100,7 @@ class HybridRetriever:
 
         if not os.path.exists(bm25_path):
             raise RuntimeError(
-                f"{bm25_path} 없음. python src/pipeline/bm25_index.py 먼저 실행해."
+                f"{bm25_path} 없음. python src/pipeline/bm25_index.py 먼저 실행해 주세요."
             )
 
         with open(bm25_path, "rb") as f:

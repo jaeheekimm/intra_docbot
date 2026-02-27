@@ -145,9 +145,9 @@ if "history_pairs" not in st.session_state:
 # ── Sidebar ───────────────────────────────────────────────
 with st.sidebar:
     st.header("검색 설정")
-    top_k = st.slider("출처 원문 개수", 3, 10, 3, 1)
-    dense_k = st.slider("의미기반 검색", 5, 50, 5, 1)
-    bm25_k = st.slider("키워드 검색", 10, 200, 10, 5)
+    top_k = st.slider("출처 원문 개수", 3, 10, 5, 1)
+    dense_k = st.slider("의미기반 검색", 5, 50, 15, 1)
+    bm25_k = st.slider("키워드 검색", 10, 200, 30, 5)
     alpha = st.slider("의미기반 검색의 비중", 0.0, 1.0, 0.6, 0.05)
     st.divider()
     st.header("대화 설정")
@@ -209,17 +209,17 @@ def _render_user_bubble(content: str):
 
 
 def _render_ai_bubble(content: str):
-    col_icon, col_text = st.columns([0.08, 0.93])
+    col_icon, col_text = st.columns([0.06, 0.93])
     with col_icon:
-        st.image("src/Aviator_bot.png", width=80)
+        st.image("src/Aviator_bot.png", width=60)
     with col_text:
         st.markdown(content)
 
 
 def _stream_and_render(answer_r, state) -> str:
-    col_icon, col_text = st.columns([0.08, 0.93])
+    col_icon, col_text = st.columns([0.06, 0.93])
     with col_icon:
-        st.image("src/Aviator_bot.png", width=80)
+        st.image("src/Aviator_bot.png", width=60)
     with col_text:
         placeholder = st.empty()
         answer_accum = ""
@@ -233,8 +233,8 @@ def _stream_and_render(answer_r, state) -> str:
 def _render_hits_expander(hits: list, key_prefix: str):
     if not hits:
         return
-    with st.expander("📄 출처 및 참고 원문", expanded=False):
-        tabs = st.tabs(["출처", "출처 원문"])
+    with st.expander("📃", expanded=False):
+        tabs = st.tabs(["출처", "원문"])
         with tabs[0]:
             seen = set()
             for h in hits:
@@ -292,7 +292,7 @@ while i < len(messages):
 
 
 # ── 신규 입력 ─────────────────────────────────────────────
-user_input = st.chat_input("질문을 입력해주세요.")
+user_input = st.chat_input("질문을 입력해 주세요.")
 
 if user_input:
     st.session_state["messages"].append({"role": "user", "content": user_input})
