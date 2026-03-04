@@ -4,31 +4,29 @@ import subprocess
 from typing import Any, Dict, List
 import streamlit as st
 
-# 1) 경로
+# 1) sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# 2) ENV
-os.environ["DATA_DIR"] = "./data"
-os.environ["JSONL_PATH"] = "/tmp/parsed_documents.jsonl"
-os.environ["OUT_IMG_DIR"] = "/tmp/extracted_images"
-os.environ["OUT_IMG_MANIFEST"] = "/tmp/image_manifest.json"
-os.environ["CHROMA_DIR"] = "/tmp/chroma_db"
-os.environ["BM25_PATH"] = "/tmp/bm25_index.pkl"
-os.environ["CHROMA_COLLECTION"] = "intra_docs"
-
+# 2) .env 먼저 로드 → paths.py import 시점에 env가 적용됨
 from dotenv import load_dotenv
-
 load_dotenv()
 
-from src.chains.rag_chain import get_rag_parts, filter_sources_by_similarity
+# 3) 중앙 설정에서 경로 가져오기
+from src.utils.paths import CHROMA_DIR as _CHROMA_DIR, BM25_PATH as _BM25_PATH
+from src.chains.rag_chain import (
+    get_rag_parts,
+    filter_sources_by_similarity,
+    is_document_query,
+    REFUSAL_MSG,
+)
 import base64
 
 
 def ensure_indexes():
-    chroma_dir = Path(os.environ["CHROMA_DIR"])
-    bm25_path = Path(os.environ["BM25_PATH"])
+    chroma_dir = Path(_CHROMA_DIR)
+    bm25_path = Path(_BM25_PATH)
     if chroma_dir.exists() and bm25_path.exists():
         return
     python_exec = sys.executable
@@ -163,11 +161,23 @@ with st.sidebar:
     )
     st.divider()
     st.header("출처 설정")
-    source_threshold = st.slider("출처 유사도 기준", 0.10, 0.90, 0.45, 0.05)
+    source_threshold = st.slider("출처 유사도 기준", 0.20, 0.80, 0.47, 0.01)
     st.divider()
     if st.button("대화내용 초기화"):
         st.session_state["messages"].clear()
         st.success("초기화 완료")
+
+    # st.divider()
+    # if st.button("인덱스 강제 재생성", key="btn_reindex"):
+    #     import shutil
+
+    #     shutil.rmtree(os.environ["CHROMA_DIR"], ignore_errors=True)
+    #     bm25_path = os.environ["BM25_PATH"]
+    #     if os.path.exists(bm25_path):
+    #         os.remove(bm25_path)
+    #     subprocess.run([sys.executable, "-m", "src.pipeline.ingest_chroma"], check=True)
+    #     subprocess.run([sys.executable, "-m", "src.pipeline.bm25_index"], check=True)
+    #     st.success("재생성 완료! 앱을 새로고침하세요.")
 
 
 # ── Util ──────────────────────────────────────────────────
@@ -192,11 +202,16 @@ def _compose_query(user_input: str) -> str:
     )
     prompt_txt = (st.session_state.get("user_prompt") or "").strip()
     parts: List[str] = []
+
+    # 현재 질문을 맨 앞에
+    parts.append(f"[현재질문]\n{user_input}")
+
+    if history_txt:
+        parts.append(f"[참고 - 이전대화]\n{history_txt}")
+
     if prompt_txt:
         parts.append(f"[추가지침]\n{prompt_txt}")
-    if history_txt:
-        parts.append(f"[최근대화]\n{history_txt}")
-    parts.append(f"[현재질문]\n{user_input}")
+
     return "\n\n".join(parts).strip()
 
 
@@ -316,24 +331,36 @@ if user_input:
     st.markdown('<div class="chat-set">', unsafe_allow_html=True)
     _render_user_bubble(user_input)
 
-    retrieve_r, answer_r = get_rag_parts(
-        top_k=top_k, dense_k=dense_k, bm25_k=bm25_k, alpha=alpha
-    )
-    state = retrieve_r.invoke(_compose_query(user_input))
-    hits = state.get("hits", [])
+    if not is_document_query(user_input):
+        # 사내 문서와 무관한 질문 → LLM/검색 없이 거절
+        answer_accum = REFUSAL_MSG
+        _render_ai_bubble(answer_accum)
+        filtered_hits, scored_hits = [], []
+    else:
+        retrieve_r, answer_r = get_rag_parts(
+            top_k=top_k, dense_k=dense_k, bm25_k=bm25_k, alpha=alpha
+        )
+        # 검색은 현재 질문만으로 (히스토리 섞으면 검색 품질 저하)
+        retrieve_state = retrieve_r.invoke(user_input)
+        hits = retrieve_state.get("hits", [])
 
-    answer_accum = _stream_and_render(answer_r, state)
+        # 생성은 히스토리 포함 full context 사용
+        gen_state = {
+            "question": _compose_query(user_input),
+            "context": retrieve_state["context"],
+            "hits": hits,
+        }
+        answer_accum = _stream_and_render(answer_r, gen_state)
 
-    # 출처용: 유사도 필터링된 hits
-    filtered_hits, scored_hits = filter_sources_by_similarity(
-        answer_accum, hits, threshold=source_threshold
-    )
+        filtered_hits, scored_hits = filter_sources_by_similarity(
+            answer_accum, hits, threshold=source_threshold
+        )
 
     st.session_state["messages"].append(
         {
             "role": "assistant",
             "content": answer_accum.strip(),
-            "hits": scored_hits,  # score 붙은 전체
+            "hits": scored_hits,
             "filtered_hits": filtered_hits,
         }
     )

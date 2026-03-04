@@ -10,10 +10,7 @@ from langsmith import traceable
 
 load_dotenv()
 
-CHROMA_DIR = os.getenv("CHROMA_DIR", "./indexes/chroma_db")
-COLLECTION = os.getenv("CHROMA_COLLECTION", "intra_docs")
-BM25_PATH = os.getenv("BM25_PATH", "./indexes/bm25_index.pkl")
-EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+from src.utils.paths import CHROMA_DIR, CHROMA_COLLECTION as COLLECTION, BM25_PATH, EMBED_MODEL
 
 # ★ Kiwi는 한 번만 생성(매 호출마다 만들면 느림)
 _KIWI = Kiwi()
@@ -116,17 +113,32 @@ class HybridRetriever:
         self, query: str, k: int
     ) -> List[Tuple[str, str, Dict[str, Any], float]]:
 
-        hits = self.db.similarity_search_with_score(query, k=k)
+        embedding = self.embeddings.embed_query(query)
+        results = self.db._collection.query(
+            query_embeddings=[embedding],
+            n_results=k,
+            include=["documents", "metadatas", "distances"],
+        )
 
-        docs = [d for d, _ in hits]
-        raw = [float(s) for _, s in hits]
+        docs_list = results["documents"][0]
+        metas_list = results["metadatas"][0]
+        dists_list = results["distances"][0]
 
-        # similarity_search_with_score는 보통 distance 반환 (작을수록 좋음)
-        dense_scores = rank_norm(raw, reverse=False)
+        # None page_content 필터링 (ChromaDB가 빈 문서를 None으로 반환하는 경우 대비)
+        filtered = [
+            (doc, meta, dist)
+            for doc, meta, dist in zip(docs_list, metas_list, dists_list)
+            if doc is not None
+        ]
+        if not filtered:
+            return []
+
+        docs_f, metas_f, dists_f = zip(*filtered)
+        dense_scores = rank_norm(list(dists_f), reverse=False)
 
         out: List[Tuple[str, str, Dict[str, Any], float]] = []
-        for d, sc in zip(docs, dense_scores):
-            md = dict(d.metadata or {})
+        for doc, md, sc in zip(docs_f, metas_f, dense_scores):
+            md = dict(md or {})
             cid = md.get("chunk_id")
             if not cid:
                 cid = (
@@ -134,7 +146,7 @@ class HybridRetriever:
                     f"{md.get('slide','')}|{md.get('sheet','')}|"
                     f"{md.get('row','')}"
                 )
-            out.append((cid, d.page_content, md, sc))
+            out.append((cid, doc, md, sc))
         return out
 
     @traceable(name="Retriever.BM25Search")
@@ -204,8 +216,25 @@ class HybridRetriever:
             if "image_paths" in md:
                 md["image_paths"] = safe_json_loads(md["image_paths"])
 
-        ranked = sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
-        return ranked
+        ranked_all = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
+
+        return ranked_all[:top_k]
+
+
+def _source_dedup_key(md: Dict[str, Any]) -> str:
+    """
+    같은 출처(파일+페이지/슬라이드/행)에서 온 청크를 하나로 취급하기 위한 키.
+    hybrid_search에서 동일 페이지의 중복 청크를 제거할 때 사용.
+    """
+    source = md.get("source", "")
+    doc_type = (md.get("doc_type") or "").lower()
+    if doc_type == "pdf":
+        return f"{source}|p{md.get('page', '')}"
+    if doc_type == "pptx":
+        return f"{source}|s{md.get('slide', '')}"
+    if doc_type == "xlsx":
+        return f"{source}|{md.get('sheet', '')}|r{md.get('row', '')}"
+    return f"{source}|{md.get('page', '')}|{md.get('slide', '')}|{md.get('sheet', '')}|{md.get('row', '')}"
 
 
 def format_source(md: Dict[str, Any]) -> str:

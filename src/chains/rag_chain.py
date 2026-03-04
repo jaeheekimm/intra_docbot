@@ -1,6 +1,6 @@
 # src/chains/rag_chain.py
 
-import os
+import re
 from typing import Dict, Any, List
 
 from dotenv import load_dotenv
@@ -12,7 +12,7 @@ from src.retriever import HybridRetriever, format_source
 
 load_dotenv()
 
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+from src.utils.paths import LLM_MODEL, EMBED_MODEL, CHROMA_DIR, CHROMA_COLLECTION
 
 
 def _build_context(hits: List[Dict[str, Any]], max_chars: int = 12000) -> str:
@@ -43,7 +43,7 @@ def _build_context(hits: List[Dict[str, Any]], max_chars: int = 12000) -> str:
 
 
 """너는 사내 메뉴얼 문서 기반 AI 비서다.
-제공된 문서 내용만 근거로 답하며, 문서에 없는 내용은 생성하지 않는다.
+제공된 문서 내용만 근거로 답한다.
 
 [규칙]
 1) 문서에 없는 정보는 추측하지 않는다.
@@ -60,7 +60,7 @@ def _make_prompt(question: str, context: str) -> str:
 [절대 규칙]
 - [컨텍스트]에 질문에 대한 직접적인 답이 없으면, 알려줄 수 없음을 먼저 안내하십시오.
 - 매번 다른 표현을 사용하되, "문서", "컨텍스트", "제공된 정보" 같은 내부 구조 표현은 절대 사용하지 마십시오.
-- [컨텍스트]에 있더라도 질문과 직접 관련 없는 내용은 사용하지 마십시오.
+- [컨텍스트]에 정보가 있더라도 질문과 직접 관련 없는 내용은 사용하지 마십시오.
 - 사용자가 비공식 표현을 사용하더라도 답변에는 반드시 문서에 명시된 공식 명칭으로 바꿔서 작성하십시오.
 - 질문에 대한 답을 먼저 하고, 추가 정보는 그 다음에 작성하십시오.
 
@@ -76,6 +76,28 @@ def _make_prompt(question: str, context: str) -> str:
 """
 
 
+REFUSAL_MSG = (
+    "저는 사내 문서 기반 검색 봇입니다. "
+    "복리후생·그룹웨어·시설 안내 등 사내 관련 내용을 질문해 주세요."
+)
+
+# 명백히 문서 검색과 무관한 요청 패턴 (이것만 차단, 나머지는 RAG로 전달)
+_OFFTOPIC_PATTERNS = [
+    r"(이메일|메일|보고서|기획서|제안서|자기소개서|커버레터).{0,10}(써|작성|만들|써줘|작성해|만들어)",
+    r"(번역|translate)\s*(해줘|해|줘|해주|해주세요)",
+    r"(코드|함수|프로그램|스크립트).{0,5}(짜|작성|만들|써)",
+    r"(시|노래|소설|이야기|에세이).{0,5}(써|지어|만들|작성)",
+]
+
+
+def is_document_query(question: str) -> bool:
+    """명백히 문서 외 요청(작성·번역·창작·코드)만 차단. 나머지는 RAG로 전달."""
+    for pat in _OFFTOPIC_PATTERNS:
+        if re.search(pat, question):
+            return False
+    return True
+
+
 def get_rag_parts(*, top_k=5, dense_k=20, bm25_k=60, alpha=0.6):
     retriever = HybridRetriever()
     llm = ChatOpenAI(model=LLM_MODEL, temperature=0, streaming=True)
@@ -89,6 +111,7 @@ def get_rag_parts(*, top_k=5, dense_k=20, bm25_k=60, alpha=0.6):
             bm25_k=bm25_k,
             alpha=alpha,
         )
+        print(f"[DEBUG] top_k={top_k}, hits 개수={len(hits)}")
 
         context = _build_context(hits)
 
@@ -113,69 +136,58 @@ import chromadb
 
 
 def filter_sources_by_similarity(
-    answer: str, hits: list, threshold: float = 0.35
-) -> list:
-    """
-    답변 임베딩 1회 → Chroma에 저장된 chunk 벡터 직접 조회 → 코사인 유사도 계산
-    threshold 이상인 chunk만 출처로 반환
-    """
+    answer: str, hits: list, threshold: float = 0.35, top_ratio: float = 0.75
+) -> tuple:
     if not hits or not answer.strip():
-        return hits
+        return [], hits
 
-    # 1) 답변 임베딩 (API 1회)
-    embed_model = OpenAIEmbeddings(
-        model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    )
+    embed_model = OpenAIEmbeddings(model=EMBED_MODEL)
     answer_vec = np.array(embed_model.embed_query(answer))
 
-    # 2) Chroma에서 chunk_id로 저장된 벡터 직접 조회
-    chroma_dir = os.getenv("CHROMA_DIR", "/tmp/chroma_db")
-    collection_name = os.getenv("CHROMA_COLLECTION", "intra_docs")
-    client = chromadb.PersistentClient(path=chroma_dir)
-    col = client.get_collection(collection_name)
+    client = chromadb.PersistentClient(path=CHROMA_DIR)
+    col = client.get_collection(CHROMA_COLLECTION)
 
-    # hits에서 chunk_id 추출
-    chunk_ids = []
-    for h in hits:
-        cid = (h.get("metadata") or {}).get("chunk_id")
-        if cid:
-            chunk_ids.append(cid)
+    chunk_ids = [
+        (h.get("metadata") or {}).get("chunk_id")
+        for h in hits
+        if (h.get("metadata") or {}).get("chunk_id")
+    ]
 
-    if not chunk_ids:
-        # chunk_id 없으면 그냥 전체 반환
-        return hits
-
-    # Chroma에서 해당 chunk들의 벡터 조회
     result = col.get(ids=chunk_ids, include=["embeddings"])
     id_to_vec = {
         rid: np.array(vec) for rid, vec in zip(result["ids"], result["embeddings"])
     }
 
-    # 3) 코사인 유사도 계산 & 필터링
     filtered = []
-    all_scored = []  # ← 추가: 전체 hits에 score 붙이기
+    all_scored = []
+
     for h in hits:
         cid = (h.get("metadata") or {}).get("chunk_id")
         chunk_vec = id_to_vec.get(cid)
+
+        # Chroma에서 못 찾으면 텍스트로 직접 임베딩 계산 (폴백)
         if chunk_vec is None:
-            continue
+            chunk_text = (h.get("text") or "").strip()
+            if not chunk_text:
+                continue
+            chunk_vec = np.array(embed_model.embed_query(chunk_text))
 
         score = float(
             np.dot(answer_vec, chunk_vec)
             / (np.linalg.norm(answer_vec) * np.linalg.norm(chunk_vec) + 1e-9)
         )
 
-        h = dict(h)  # 원본 수정 방지
-        h["similarity_score"] = round(score, 3)  # ← 전부 score 붙임
-        all_scored.append(h)  # ← 추가
+        h = dict(h)
+        h["similarity_score"] = round(score, 3)
+        all_scored.append(h)
 
-        if score >= threshold:
-            filtered.append(h)
+    all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
 
-    filtered.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
-    all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)  # ← 추가
+    if all_scored:
+        top_score = all_scored[0]["similarity_score"]
+        effective_threshold = max(threshold, top_score * top_ratio)
+        filtered = [h for h in all_scored if h["similarity_score"] >= effective_threshold]
+    else:
+        filtered = []
 
-    return (
-        filtered,  # threshold 미달이면 그냥 빈 리스트
-        all_scored,  # 원문탭은 score 붙은 전체
-    )
+    return filtered, all_scored

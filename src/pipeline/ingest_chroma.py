@@ -8,45 +8,39 @@ import hashlib
 from collections import defaultdict
 from typing import List, Dict, Any
 
-from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 import chromadb
 
-load_dotenv()
+from src.utils.paths import OUT_JSONL as JSONL_PATH, CHROMA_DIR, CHROMA_COLLECTION as COLLECTION, EMBED_MODEL
 
-JSONL_PATH = os.getenv("JSONL_PATH", "./data/parsed_documents.jsonl")
-CHROMA_DIR = os.getenv("CHROMA_DIR", "./indexes/chroma_db")
-COLLECTION = os.getenv("CHROMA_COLLECTION", "intra_docs")
-
-EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+PIPELINE_VERSION = "v5"
 
 # PDF 기본 청킹
 PDF_SPLITTER = RecursiveCharacterTextSplitter(
-    chunk_size=800,
-    chunk_overlap=120,
+    chunk_size=400,
+    chunk_overlap=80,
     separators=["\n\n", "\n", " ", ""],
 )
 
 # PPT는 보통 슬라이드 단위가 짧아서 split 안 하는게 자연스러움.
 # 다만 슬라이드에 텍스트가 너무 길면만 안전장치로 split.
 PPT_SPLITTER = RecursiveCharacterTextSplitter(
-    chunk_size=900,
-    chunk_overlap=80,
+    chunk_size=500,
+    chunk_overlap=60,
     separators=["\n\n", "\n", " ", ""],
 )
 
-PPT_SPLIT_THRESHOLD = 1400  # 이 길이 넘으면 split
+PPT_SPLIT_THRESHOLD = 800  # 이 길이 넘으면 split
 
 
 def make_chunk_id(meta, text, local_idx):
     base = (
         f"{meta.get('source','')}|{meta.get('doc_type','')}|"
         f"{meta.get('page','')}|{meta.get('slide','')}|{meta.get('sheet','')}|{meta.get('row','')}|"
-        f"{text[:200]}"
+        f"{len(text)}|{text[:120]}"  # ← local_idx 대신 len(text)
     )
     return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -114,25 +108,42 @@ def sanitize_metas(metas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return cleaned
 
 
-def build_source_fingerprints(chunks: List[Document]) -> Dict[str, str]:
-    """
-    source(파일) 단위로 전체 텍스트를 합쳐 fingerprint(sha1)을 만든다.
-    - 내용이 바뀌면 fingerprint가 바뀌므로, 해당 source만 delete+readd 가능.
-    """
-    by_source: Dict[str, List[str]] = defaultdict(list)
-
+def build_source_fingerprints(chunks):
+    by_source = defaultdict(list)
     for c in chunks:
         src = c.metadata.get("source") or ""
         if not src:
             continue
         by_source[src].append((c.page_content or "").strip())
 
-    fps: Dict[str, str] = {}
+    fps = {}
     for src, texts in by_source.items():
         joined = "\n".join(texts)
-        fps[src] = hashlib.sha1(joined.encode("utf-8", errors="ignore")).hexdigest()
-
+        fps[src] = hashlib.sha1(
+            (PIPELINE_VERSION + joined).encode("utf-8", errors="ignore")
+        ).hexdigest()
     return fps
+
+
+# def build_source_fingerprints(chunks: List[Document]) -> Dict[str, str]:
+#     """
+#     source(파일) 단위로 전체 텍스트를 합쳐 fingerprint(sha1)을 만든다.
+#     - 내용이 바뀌면 fingerprint가 바뀌므로, 해당 source만 delete+readd 가능.
+#     """
+#     by_source: Dict[str, List[str]] = defaultdict(list)
+
+#     for c in chunks:
+#         src = c.metadata.get("source") or ""
+#         if not src:
+#             continue
+#         by_source[src].append((c.page_content or "").strip())
+
+#     fps: Dict[str, str] = {}
+#     for src, texts in by_source.items():
+#         joined = "\n".join(texts)
+#         fps[src] = hashlib.sha1(joined.encode("utf-8", errors="ignore")).hexdigest()
+
+#     return fps
 
 
 def main():
@@ -156,20 +167,28 @@ def main():
 
     # 3) chunk_id/source_fp 포함해서 적재 준비
     for i, c in enumerate(chunks):
-        cid = make_chunk_id(c.metadata, c.page_content, i)
-        c.metadata["chunk_id"] = cid
-
         src = c.metadata.get("source")
         if src:
             c.metadata["source_fp"] = source_fp.get(src)
 
-        # (추가) PPTX title을 임베딩 텍스트에 반영
         title = c.metadata.get("title")
         content = (c.page_content or "").strip()
+        doc_type = (c.metadata.get("doc_type") or "").lower()
+        file_name = c.metadata.get("file_name") or ""
+
         if title and isinstance(title, str):
             embed_text = f"[TITLE] {title}\n{content}".strip()
+        elif doc_type == "pdf" and file_name:
+            embed_text = f"[문서] {file_name}\n{content}".strip()
         else:
             embed_text = content
+
+        if not embed_text:
+            continue
+
+        # ← embed_text 만든 후에 chunk_id 계산 (bm25와 동일)
+        cid = make_chunk_id(c.metadata, embed_text, i)
+        c.metadata["chunk_id"] = cid
 
         texts.append(embed_text)
         metas.append(c.metadata)

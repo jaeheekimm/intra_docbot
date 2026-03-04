@@ -19,22 +19,23 @@ from kiwipiepy import Kiwi
 kiwi = Kiwi()
 
 
-JSONL_PATH = os.getenv("JSONL_PATH", "./data/parsed_documents.jsonl")
-BM25_PATH = os.getenv("BM25_PATH", "./indexes/bm25_index.pkl")
+from src.utils.paths import OUT_JSONL as JSONL_PATH, BM25_PATH
 
 # ingest_chroma.py와 맞추기
 PDF_SPLITTER = RecursiveCharacterTextSplitter(
-    chunk_size=800,
-    chunk_overlap=120,
+    chunk_size=400,
+    chunk_overlap=80,
     separators=["\n\n", "\n", " ", ""],
 )
 
 PPT_SPLITTER = RecursiveCharacterTextSplitter(
-    chunk_size=900,
-    chunk_overlap=80,
+    chunk_size=500,
+    chunk_overlap=60,
     separators=["\n\n", "\n", " ", ""],
 )
-PPT_SPLIT_THRESHOLD = 1400
+PPT_SPLIT_THRESHOLD = 800
+
+PIPELINE_VERSION = "v5"  # ← 코드 수정했을 때만 v3, v4로 올림
 
 
 def load_docs_from_jsonl(path: str) -> List[Document]:
@@ -51,11 +52,11 @@ def load_docs_from_jsonl(path: str) -> List[Document]:
     return docs
 
 
-def make_chunk_id(meta: Dict[str, Any], text: str, local_idx: int) -> str:
+def make_chunk_id(meta, text, local_idx):
     base = (
         f"{meta.get('source','')}|{meta.get('doc_type','')}|"
         f"{meta.get('page','')}|{meta.get('slide','')}|{meta.get('sheet','')}|{meta.get('row','')}|"
-        f"{local_idx}|{text[:120]}"
+        f"{len(text)}|{text[:120]}"  # ← local_idx 대신 len(text)
     )
     return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -112,7 +113,7 @@ def split_by_type(docs: List[Document]) -> List[Document]:
     return out
 
 
-def build_source_fingerprints(chunks: List[Document]) -> Dict[str, str]:
+def build_source_fingerprints(chunks):
     by_source = defaultdict(list)
     for c in chunks:
         src = c.metadata.get("source") or ""
@@ -123,7 +124,9 @@ def build_source_fingerprints(chunks: List[Document]) -> Dict[str, str]:
     fps = {}
     for src, texts in by_source.items():
         joined = "\n".join(texts)
-        fps[src] = hashlib.sha1(joined.encode("utf-8", errors="ignore")).hexdigest()
+        fps[src] = hashlib.sha1(
+            (PIPELINE_VERSION + joined).encode("utf-8", errors="ignore")
+        ).hexdigest()
     return fps
 
 
@@ -155,8 +158,13 @@ def main() -> None:
         text = (c.page_content or "").strip()
 
         title = c.metadata.get("title")
+        doc_type = (c.metadata.get("doc_type") or "").lower()
+        file_name = c.metadata.get("file_name") or ""
+
         if title and isinstance(title, str):
-            text = f"{title}\n{text}".strip()
+            text = f"[TITLE] {title}\n{text}".strip()
+        elif doc_type == "pdf" and file_name:
+            text = f"[문서] {file_name}\n{text}".strip()
 
         if len(text) < 20:
             continue
