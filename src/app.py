@@ -348,12 +348,15 @@ if user_input:
         )
         _short = len(user_input) < 20
         _has_pronoun = re.search(r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input)
-        if history_txt and (_short or _has_pronoun):
+        _has_context_dep = re.search(
+            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)", user_input
+        )
+        if history_txt and (_short or _has_pronoun or _has_context_dep):
             search_query = rewrite_query(user_input, history_txt)
             print(f"[REWRITE] '{user_input}' → '{search_query}'")
         else:
             search_query = user_input
-            print(f"[NO REWRITE] query='{search_query}', short={_short}, history={'있음' if history_txt else '없음'}")
+            print(f"[NO REWRITE] query='{search_query}'")
         retrieve_state = retrieve_r.invoke(search_query)
         hits = retrieve_state.get("hits", [])
 
