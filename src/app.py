@@ -370,7 +370,7 @@ if user_input:
 
         try:
             filtered_hits, scored_hits = filter_sources_by_similarity(
-                answer_accum, hits, threshold=source_threshold
+                answer_accum, hits, threshold=source_threshold, question=user_input
             )
         except Exception as e:
             print(f"[ERROR] filter_sources_by_similarity 실패: {e}")

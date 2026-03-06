@@ -64,7 +64,7 @@ def _make_prompt(question: str, context: str) -> str:
 - 사용자가 비공식 표현을 사용하더라도 답변에는 반드시 문서에 명시된 공식 명칭으로 바꿔서 작성하십시오.
 
 [답변 형식]
-- 금액·날짜·대상 등 단순 사실 질문은 관련된 핵심 값을 모두 포함하여 간결하게 답하십시오.
+- 금액·날짜·대상 등 단순 사실 질문은 관련된 핵심 값을 모두 포함하여 간결하게 답하십시오. 수치나 조건이 여러 개인 경우(월/연/대상/기간 등) 명시된 값을 빠짐없이 포함하십시오.
 - 절차·방법·신청 방법을 물었을 때만 번호 단계(1, 2, 3...)로 작성하십시오.
 - 나열 정보는 줄바꿈으로 구분하십시오.
 
@@ -152,13 +152,15 @@ import chromadb
 
 
 def filter_sources_by_similarity(
-    answer: str, hits: list, threshold: float = 0.35
+    answer: str, hits: list, threshold: float = 0.35, question: str = ""
 ) -> tuple:
     if not hits or not answer.strip():
         return [], hits
 
     embed_model = OpenAIEmbeddings(model=EMBED_MODEL)
-    answer_vec = np.array(embed_model.embed_query(answer))
+    # 질문+답변 결합으로 임베딩 → 짧은 답변으로 인한 유사도 왜곡 방지
+    combined = f"{question}\n{answer}".strip() if question else answer
+    answer_vec = np.array(embed_model.embed_query(combined))
 
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = client.get_collection(CHROMA_COLLECTION)
