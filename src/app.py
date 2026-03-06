@@ -11,6 +11,7 @@ if PROJECT_ROOT not in sys.path:
 
 # 2) .env 먼저 로드 → paths.py import 시점에 env가 적용됨
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # 3) 중앙 설정에서 경로 가져오기
@@ -347,9 +348,12 @@ if user_input:
             st.session_state["messages"][:-1], st.session_state["history_pairs"]
         )
         _short = len(user_input) < 20
-        _has_pronoun = re.search(r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input)
+        _has_pronoun = re.search(
+            r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input
+        )
         _has_context_dep = re.search(
-            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)", user_input
+            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)",
+            user_input,
         )
         if history_txt and (_short or _has_pronoun or _has_context_dep):
             search_query = rewrite_query(user_input, history_txt)

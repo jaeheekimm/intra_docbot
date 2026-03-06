@@ -61,7 +61,7 @@ def _make_prompt(question: str, context: str) -> str:
 - [컨텍스트]에 질문에 대한 직접적인 답이 없으면, 알려줄 수 없음을 먼저 안내하십시오.
 - "문서", "컨텍스트", "제공된 정보" 같은 내부 구조 표현은 절대 사용하지 마십시오.
 - 질문에서 명시적으로 요청한 내용만 답변하십시오. 묻지 않은 절차·방법·주의사항은 포함하지 마십시오.
-- 사용자가 비공식 표현을 사용하더라도 답변에는 반드시 문서에 명시된 공식 명칭으로 바꿔서 작성하십시오.
+- 사용자가 비공식·축약 표현을 사용하더라도, 답변의 제도명·서류명·항목명은 반드시 [컨텍스트]에 명시된 공식 명칭으로 바꿔서 작성하십시오. 답변 첫 문장의 주어도 공식 명칭을 사용하십시오.
 
 [답변 형식]
 - 금액·날짜·대상 등 단순 사실 질문은 관련된 핵심 값을 모두 포함하여 간결하게 답하십시오. 수치나 조건이 여러 개인 경우(월/연/대상/기간 등) 명시된 값을 빠짐없이 포함하십시오.
@@ -158,9 +158,9 @@ def filter_sources_by_similarity(
         return [], hits
 
     embed_model = OpenAIEmbeddings(model=EMBED_MODEL)
-    # 질문+답변 결합으로 임베딩 → 짧은 답변으로 인한 유사도 왜곡 방지
-    combined = f"{question}\n{answer}".strip() if question else answer
-    answer_vec = np.array(embed_model.embed_query(combined))
+    # 질문 임베딩 기준으로 유사도 계산 → 답변 길이에 영향받지 않아 안정적
+    query_text = question.strip() if question else answer
+    answer_vec = np.array(embed_model.embed_query(query_text))
 
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = client.get_collection(CHROMA_COLLECTION)
