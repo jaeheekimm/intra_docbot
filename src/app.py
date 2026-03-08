@@ -20,7 +20,6 @@ from src.chains.rag_chain import (
     get_rag_parts,
     filter_sources_by_similarity,
     is_document_query,
-    rewrite_query,
     REFUSAL_MSG,
 )
 import base64
@@ -146,7 +145,7 @@ if "history_pairs" not in st.session_state:
 with st.sidebar:
     st.header("검색 설정")
     top_k = st.slider("출처 원문 개수", 3, 10, 5, 1)
-    dense_k = st.slider("의미기반 검색", 5, 50, 30, 1)
+    dense_k = st.slider("의미기반 검색", 5, 50, 15, 1)
     bm25_k = st.slider("키워드 검색", 10, 200, 30, 5)
     alpha = st.slider("의미기반 검색의 비중", 0.0, 1.0, 0.6, 0.05)
     st.divider()
@@ -163,7 +162,7 @@ with st.sidebar:
     )
     st.divider()
     st.header("출처 설정")
-    source_threshold = st.slider("출처 유사도 기준", 0.20, 0.80, 0.52, 0.01)
+    source_threshold = st.slider("출처 유사도 기준", 0.20, 0.80, 0.47, 0.01)
     st.divider()
     if st.button("대화내용 초기화"):
         st.session_state["messages"].clear()
@@ -299,7 +298,6 @@ def _render_hits_expander(filtered_hits: list, all_hits: list, key_prefix: str):
 
 # ── 기존 대화 출력 ────────────────────────────────────────
 messages = st.session_state["messages"]
-print(f"[SESSION] messages 개수={len(messages)}, roles={[m['role'] for m in messages]}")
 i = 0
 while i < len(messages):
     msg = messages[i]
@@ -343,25 +341,8 @@ if user_input:
         retrieve_r, answer_r = get_rag_parts(
             top_k=top_k, dense_k=dense_k, bm25_k=bm25_k, alpha=alpha
         )
-        # 짧거나 지시어 포함 질문은 히스토리 맥락으로 재작성 후 검색
-        history_txt = _build_recent_history_text(
-            st.session_state["messages"][:-1], st.session_state["history_pairs"]
-        )
-        _short = len(user_input) < 20
-        _has_pronoun = re.search(
-            r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input
-        )
-        _has_context_dep = re.search(
-            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)",
-            user_input,
-        )
-        if history_txt and (_short or _has_pronoun or _has_context_dep):
-            search_query = rewrite_query(user_input, history_txt)
-            print(f"[REWRITE] '{user_input}' → '{search_query}'")
-        else:
-            search_query = user_input
-            print(f"[NO REWRITE] query='{search_query}'")
-        retrieve_state = retrieve_r.invoke(search_query)
+        # 검색은 현재 질문만으로 (히스토리 섞으면 검색 품질 저하)
+        retrieve_state = retrieve_r.invoke(user_input)
         hits = retrieve_state.get("hits", [])
 
         # 생성은 히스토리 포함 full context 사용
@@ -372,13 +353,9 @@ if user_input:
         }
         answer_accum = _stream_and_render(answer_r, gen_state)
 
-        try:
-            filtered_hits, scored_hits = filter_sources_by_similarity(
-                answer_accum, hits, threshold=source_threshold, question=user_input
-            )
-        except Exception as e:
-            print(f"[ERROR] filter_sources_by_similarity 실패: {e}")
-            filtered_hits, scored_hits = [], hits
+        filtered_hits, scored_hits = filter_sources_by_similarity(
+            answer_accum, hits, threshold=source_threshold
+        )
 
     st.session_state["messages"].append(
         {

@@ -60,13 +60,17 @@ def _make_prompt(question: str, context: str) -> str:
 [절대 규칙]
 - [컨텍스트]에 질문에 대한 직접적인 답이 없으면, 알려줄 수 없음을 먼저 안내하십시오.
 - "문서", "컨텍스트", "제공된 정보" 같은 내부 구조 표현은 절대 사용하지 마십시오.
-- 질문에서 명시적으로 요청한 내용만 답변하십시오. 묻지 않은 절차·방법·주의사항은 포함하지 마십시오.
-- 사용자가 비공식·축약 표현을 사용하더라도, 답변의 제도명·서류명·항목명은 반드시 [컨텍스트]에 명시된 공식 명칭으로 바꿔서 작성하십시오. 답변 첫 문장의 주어도 공식 명칭을 사용하십시오.
+- 질문에서 명시적으로 요청한 내용만 답하십시오. 묻지 않은 절차·주의사항·추가 안내는 절대 포함하지 마십시오.
+- 사용자가 비공식 표현을 사용하더라도 답변에는 반드시 [컨텍스트]에 명시된 공식 명칭으로 바꿔서 작성하십시오.
+- 사용자 질문이 특정 답을 암시하거나 포함하더라도 (예: "~에 있나요?", "~인가요?"),
+  [컨텍스트]에 해당 사실이 명확히 적혀 있지 않으면 절대 확인하거나 동의하지 마십시오. 추측하거나 동조하지 마십시오.
 
 [답변 형식]
-- 금액·날짜·대상 등 단순 사실 질문은 관련된 핵심 값을 모두 포함하여 간결하게 답하십시오. 수치나 조건이 여러 개인 경우(월/연/대상/기간 등) 명시된 값을 빠짐없이 포함하십시오.
-- 절차·방법·신청 방법을 물었을 때만 번호 단계(1, 2, 3...)로 작성하십시오.
-- 나열 정보는 줄바꿈으로 구분하십시오.
+- 수치나 조건이 여러 개인 경우(월/연/대상/기간 등) 명시된 값을 빠짐없이 포함하십시오.
+- 절차·방법·신청을 물었을 때만 번호 단계(1, 2, 3...)로 작성하십시오.
+- 여러 항목을 나열할 때는 각 항목을 줄바꿈으로 구분하고,
+  항목명이 있으면 "항목명: 값" 형식으로 작성하십시오.
+
 
 [질문]
 {question}
@@ -96,22 +100,6 @@ def is_document_query(question: str) -> bool:
         if re.search(pat, question):
             return False
     return True
-
-
-def rewrite_query(question: str, history_txt: str) -> str:
-    """대화 맥락을 반영해 독립적인 검색 쿼리로 재작성."""
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    prompt = f"""다음 대화 히스토리를 참고하여, 현재 질문을 문서 검색에 적합한 독립적인 한 문장으로 재작성하세요.
-재작성된 질문만 출력하세요. 설명 없이.
-
-[대화 히스토리]
-{history_txt}
-
-[현재 질문]
-{question}
-
-[재작성된 질문]"""
-    return llm.invoke(prompt).content.strip()
 
 
 def get_rag_parts(*, top_k=5, dense_k=20, bm25_k=60, alpha=0.6):
@@ -152,15 +140,13 @@ import chromadb
 
 
 def filter_sources_by_similarity(
-    answer: str, hits: list, threshold: float = 0.35, question: str = ""
+    answer: str, hits: list, threshold: float = 0.35, top_ratio: float = 0.75
 ) -> tuple:
     if not hits or not answer.strip():
         return [], hits
 
     embed_model = OpenAIEmbeddings(model=EMBED_MODEL)
-    # 질문 임베딩 기준으로 유사도 계산 → 답변 길이에 영향받지 않아 안정적
-    query_text = question.strip() if question else answer
-    answer_vec = np.array(embed_model.embed_query(query_text))
+    answer_vec = np.array(embed_model.embed_query(answer))
 
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = client.get_collection(CHROMA_COLLECTION)
@@ -202,7 +188,11 @@ def filter_sources_by_similarity(
     all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
 
     if all_scored:
-        filtered = [h for h in all_scored if h["similarity_score"] >= threshold]
+        top_score = all_scored[0]["similarity_score"]
+        effective_threshold = max(threshold, top_score * top_ratio)
+        filtered = [
+            h for h in all_scored if h["similarity_score"] >= effective_threshold
+        ]
     else:
         filtered = []
 
