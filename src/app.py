@@ -19,6 +19,7 @@ from src.utils.paths import CHROMA_DIR as _CHROMA_DIR, BM25_PATH as _BM25_PATH
 from src.chains.rag_chain import (
     get_rag_parts,
     filter_sources_by_similarity,
+    rewrite_query,
     is_document_query,
     REFUSAL_MSG,
 )
@@ -162,7 +163,7 @@ with st.sidebar:
     )
     st.divider()
     st.header("출처 설정")
-    source_threshold = st.slider("출처 유사도 기준", 0.20, 0.80, 0.47, 0.01)
+    source_threshold = st.slider("출처 유사도 기준", 0.10, 0.90, 0.45, 0.05)
     st.divider()
     if st.button("대화내용 초기화"):
         st.session_state["messages"].clear()
@@ -341,11 +342,25 @@ if user_input:
         retrieve_r, answer_r = get_rag_parts(
             top_k=top_k, dense_k=dense_k, bm25_k=bm25_k, alpha=alpha
         )
-        # 검색은 현재 질문만으로 (히스토리 섞으면 검색 품질 저하)
-        retrieve_state = retrieve_r.invoke(user_input)
+        # 짧거나 맥락 의존적인 질문은 히스토리 기반으로 재작성
+        history_txt = _build_recent_history_text(
+            st.session_state["messages"][:-1], st.session_state["history_pairs"]
+        )
+        _short = len(user_input) < 20
+        _has_pronoun = re.search(r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input)
+        _has_context_dep = re.search(
+            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)", user_input
+        )
+        if history_txt and (_short or _has_pronoun or _has_context_dep):
+            search_query = rewrite_query(user_input, history_txt)
+            print(f"[REWRITE] '{user_input}' → '{search_query}'")
+        else:
+            search_query = user_input
+            print(f"[NO REWRITE] query='{search_query}'")
+
+        retrieve_state = retrieve_r.invoke(search_query)
         hits = retrieve_state.get("hits", [])
 
-        # 생성은 히스토리 포함 full context 사용
         gen_state = {
             "question": _compose_query(user_input),
             "context": retrieve_state["context"],
@@ -353,6 +368,7 @@ if user_input:
         }
         answer_accum = _stream_and_render(answer_r, gen_state)
 
+        # 답변 임베딩 기반 출처 필터링
         filtered_hits, scored_hits = filter_sources_by_similarity(
             answer_accum, hits, threshold=source_threshold
         )

@@ -1,10 +1,13 @@
 # src/chains/rag_chain.py
 
+import os
 import re
+import numpy as np
 from typing import Dict, Any, List
 
+import chromadb
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
@@ -58,12 +61,11 @@ def _make_prompt(question: str, context: str) -> str:
     return f"""당신은 사내 내부 문서 기반 AI 비서입니다.
 
 [절대 규칙]
-- [컨텍스트]에 질문에 대한 직접적인 답이 없으면, 알려줄 수 없음을 먼저 안내하십시오.
+- [컨텍스트]에 질문에 대한 직접적인 답이 없으면, 관련처럼 보이는 다른 정보로 대체하지 말고 알려줄 수 없음을 안내하십시오.
 - "문서", "컨텍스트", "제공된 정보" 같은 내부 구조 표현은 절대 사용하지 마십시오.
 - 질문에서 명시적으로 요청한 내용만 답하십시오. 묻지 않은 절차·주의사항·추가 안내는 절대 포함하지 마십시오.
 - 사용자가 비공식 표현을 사용하더라도 답변에는 반드시 [컨텍스트]에 명시된 공식 명칭으로 바꿔서 작성하십시오.
-- 사용자 질문이 특정 답을 암시하거나 포함하더라도 (예: "~에 있나요?", "~인가요?"),
-  [컨텍스트]에 해당 사실이 명확히 적혀 있지 않으면 절대 확인하거나 동의하지 마십시오. 추측하거나 동조하지 마십시오.
+- 사용자 질문이 특정 답을 암시하거나 포함하더라도, [컨텍스트]에 해당 사실이 명확히 적혀 있지 않으면 절대 확인하거나 동의하지 마십시오. 추측하거나 동조하지 마십시오.
 
 [답변 형식]
 - 수치나 조건이 여러 개인 경우(월/연/대상/기간 등) 명시된 값을 빠짐없이 포함하십시오.
@@ -134,16 +136,32 @@ def get_rag_parts(*, top_k=5, dense_k=20, bm25_k=60, alpha=0.6):
     return retrieve_r, answer_r
 
 
-import numpy as np
-from langchain_openai import OpenAIEmbeddings
-import chromadb
+def rewrite_query(user_input: str, history_txt: str) -> str:
+    """짧거나 맥락 의존적인 질문을 검색에 적합하게 재작성."""
+    llm = ChatOpenAI(model=LLM_MODEL, temperature=0)
+    prompt = f"""다음은 사내 문서 검색 챗봇과의 대화 이력과 현재 질문입니다.
+현재 질문이 이전 대화 맥락에 의존하거나 모호한 경우, 독립적으로 이해 가능한 검색 쿼리로 재작성하세요.
+명확한 질문이라면 그대로 반환하세요. 재작성된 쿼리 텍스트만 출력하세요.
+
+[이전 대화]
+{history_txt}
+
+[현재 질문]
+{user_input}
+
+[재작성된 검색 쿼리]"""
+    return llm.invoke(prompt).content.strip()
 
 
 def filter_sources_by_similarity(
-    answer: str, hits: list, threshold: float = 0.35, top_ratio: float = 0.75
+    answer: str, hits: list, threshold: float = 0.35
 ) -> tuple:
+    """
+    답변 임베딩 1회 → Chroma에 저장된 chunk 벡터 직접 조회 → 코사인 유사도 계산
+    threshold 이상인 chunk만 출처로 반환
+    """
     if not hits or not answer.strip():
-        return [], hits
+        return hits, hits
 
     embed_model = OpenAIEmbeddings(model=EMBED_MODEL)
     answer_vec = np.array(embed_model.embed_query(answer))
@@ -151,11 +169,14 @@ def filter_sources_by_similarity(
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = client.get_collection(CHROMA_COLLECTION)
 
-    chunk_ids = [
-        (h.get("metadata") or {}).get("chunk_id")
-        for h in hits
-        if (h.get("metadata") or {}).get("chunk_id")
-    ]
+    chunk_ids = []
+    for h in hits:
+        cid = (h.get("metadata") or {}).get("chunk_id")
+        if cid:
+            chunk_ids.append(cid)
+
+    if not chunk_ids:
+        return hits, hits
 
     result = col.get(ids=chunk_ids, include=["embeddings"])
     id_to_vec = {
@@ -164,17 +185,11 @@ def filter_sources_by_similarity(
 
     filtered = []
     all_scored = []
-
     for h in hits:
         cid = (h.get("metadata") or {}).get("chunk_id")
         chunk_vec = id_to_vec.get(cid)
-
-        # Chroma에서 못 찾으면 텍스트로 직접 임베딩 계산 (폴백)
         if chunk_vec is None:
-            chunk_text = (h.get("text") or "").strip()
-            if not chunk_text:
-                continue
-            chunk_vec = np.array(embed_model.embed_query(chunk_text))
+            continue
 
         score = float(
             np.dot(answer_vec, chunk_vec)
@@ -185,15 +200,10 @@ def filter_sources_by_similarity(
         h["similarity_score"] = round(score, 3)
         all_scored.append(h)
 
-    all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        if score >= threshold:
+            filtered.append(h)
 
-    if all_scored:
-        top_score = all_scored[0]["similarity_score"]
-        effective_threshold = max(threshold, top_score * top_ratio)
-        filtered = [
-            h for h in all_scored if h["similarity_score"] >= effective_threshold
-        ]
-    else:
-        filtered = []
+    filtered.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+    all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
 
     return filtered, all_scored
