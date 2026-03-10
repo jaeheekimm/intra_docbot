@@ -140,13 +140,18 @@ def rewrite_query(user_input: str, history_txt: str) -> str:
 def filter_sources_by_similarity(
     _answer: str, hits: list, threshold: float = 0.4
 ) -> tuple:
-    """출처 표시에 쓸 hits를 필터링해서 반환. 현재는 dense score 기준 1등만 표시.
+    """출처 탭에 표시할 hits를 필터링해서 반환.
 
     출처 필터링 방식 변천사:
     1. LLM한테 출처 추출 시켜보기 → 미시도
     2. reranker 모델로 재순위 → 써봤는데 성능 더 떨어짐
-    3. 답변 임베딩과 청크 임베딩 코사인 유사도로 필터링 → 관련 없는 출처가 뜨는 경우 있었음
-    → 현재: 그냥 dense score 1등 1개만 출처로 표시. threshold 파라미터는 현재 미사용.
+    3. 답변 임베딩과 청크 임베딩 코사인 유사도로 필터링
+       → 관련 없는 출처가 걸러지지 않고 뜨는 경우가 있었음.
+          유사도 검사 자체가 부정확해서 threshold를 아무리 조절해도
+          엉뚱한 출처가 출력되거나, 맞는 출처가 빠지는 문제가 반복됨.
+    → 현재: dense score 1위 1개만 출처로 표시.
+       단, 1위라도 dense score가 threshold 미만이면 관련 문서 없음으로 처리.
+       (BM25로만 걸린 결과나 실제로 관련 없는 문서가 출처에 뜨는 것을 방지)
 
     TODO: LLM한테 출처 뽑게 하는 것도 고민해볼 것. reranker는 더 좋은 모델로 재시도 여지 있음.
     반환: (filtered_hits, all_scored_hits)
@@ -158,6 +163,11 @@ def filter_sources_by_similarity(
         all_scored.append(h)
 
     all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
-    filtered = all_scored[:1] if all_scored else []
+
+    # 1위 후보가 threshold 이상일 때만 출처로 표시
+    if all_scored and all_scored[0].get("similarity_score", 0) >= threshold:
+        filtered = all_scored[:1]
+    else:
+        filtered = []
 
     return filtered, all_scored
