@@ -3,6 +3,8 @@
 사내 내부 문서 기반 AI 검색 챗봇입니다.
 PDF, PPTX, XLSX 문서를 인덱싱하고 직원 질문에 한국어로 답변합니다.
 
+---
+
 ## 주요 기능
 
 - **하이브리드 검색**: 의미 기반 벡터 검색(ChromaDB) + 키워드 검색(BM25) 결합
@@ -12,23 +14,18 @@ PDF, PPTX, XLSX 문서를 인덱싱하고 직원 질문에 한국어로 답변�
 - **출처 표시**: 답변에 활용된 원문 문서 및 페이지 표시
 - **대화 맥락 유지**: 이전 대화를 참고한 질문 재작성(Query Rewriting)
 
-## 아키텍처
+---
 
-```
-./data/*.pdf|pptx|xlsx
-       ↓  src/pipeline/extract.py
-parsed_documents.jsonl + extracted_images/
-       ↓  src/pipeline/ingest_chroma.py   src/pipeline/bm25_index.py
-  ChromaDB (벡터 저장소)                   bm25_index.pkl
-       ↓                                        ↓
-              src/retriever.py: HybridRetriever
-              (dense 검색 + BM25, 순위 정규화, 가중 합산)
-                         ↓
-              src/chains/rag_chain.py
-              (프롬프트 → ChatOpenAI → 스트리밍 답변)
-                         ↓
-              src/app.py (Streamlit UI)
-```
+## 데이터 흐름
+
+1. `./data/` 의 PDF·PPTX·XLSX 파일을 **`extract.py`** 가 파싱해 JSONL로 저장
+2. **`ingest_chroma.py`** 가 청크를 임베딩해 ChromaDB에 저장
+3. **`bm25_index.py`** 가 동일 청크로 BM25 키워드 인덱스 생성
+4. **`HybridRetriever`** 가 두 인덱스를 병합해 가중 점수로 순위 결정
+5. **`rag_chain.py`** 가 상위 청크를 컨텍스트로 GPT에 전달해 답변 생성
+6. **`app.py`** (Streamlit) 가 답변을 스트리밍으로 화면에 출력
+
+---
 
 ## 설치 및 실행
 
@@ -77,6 +74,8 @@ streamlit run src/app.py
 
 최초 실행 시 인덱스가 없으면 자동으로 파이프라인 전체(파싱 → 임베딩 → BM25 인덱싱)를 실행합니다.
 
+---
+
 ## 파이프라인 수동 실행
 
 ```bash
@@ -90,6 +89,8 @@ python -m src.pipeline.ingest_chroma
 python -m src.pipeline.bm25_index
 ```
 
+---
+
 ## 사이드바 검색 설정
 
 | 설정 | 설명 | 기본값 |
@@ -100,6 +101,8 @@ python -m src.pipeline.bm25_index
 | 의미기반 검색의 비중 | dense vs BM25 가중치 (alpha) | 0.6 |
 | 기억할 최근 대화 세트 | 대화 맥락 유지 범위 | 3 |
 | 출처 유사도 기준 | 출처 표시 threshold | 0.40 |
+
+---
 
 ## 프로젝트 구조
 
@@ -127,6 +130,8 @@ intra_docbot/
 ├── requirements.txt
 └── .env
 ```
+
+---
 
 ## 기술 스택
 
