@@ -4,17 +4,16 @@ import subprocess
 from typing import Any, Dict, List
 import streamlit as st
 
-# 1) sys.path
+# sys.path에 프로젝트 루트 추가 (모듈 import를 위해)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# 2) .env 먼저 로드 → paths.py import 시점에 env가 적용됨
+# .env 먼저 로드해야 paths.py import 시점에 env가 적용됨
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# 3) 중앙 설정에서 경로 가져오기
 from src.utils.paths import CHROMA_DIR as _CHROMA_DIR, BM25_PATH as _BM25_PATH
 from src.chains.rag_chain import (
     get_rag_parts,
@@ -27,6 +26,7 @@ import base64
 
 
 def ensure_indexes():
+    """인덱스(ChromaDB + BM25)가 없으면 파이프라인 전체를 순서대로 실행"""
     chroma_dir = Path(_CHROMA_DIR)
     bm25_path = Path(_BM25_PATH)
     if chroma_dir.exists() and bm25_path.exists():
@@ -43,6 +43,7 @@ st.set_page_config(page_title="PentAssistant", layout="wide")
 
 
 def img_to_base64(path: str) -> str:
+    """이미지 파일을 base64 문자열로 변환 (HTML img 태그 인라인 삽입용)"""
     return base64.b64encode(Path(path).read_bytes()).decode()
 
 
@@ -184,6 +185,7 @@ with st.sidebar:
 
 # ── Util ──────────────────────────────────────────────────
 def _build_recent_history_text(messages: List[Dict[str, Any]], pairs: int) -> str:
+    """최근 pairs 세트의 대화를 "사용자: ...\nAI: ..." 형태 문자열로 반환"""
     if pairs <= 0:
         return ""
     recent = messages[-2 * pairs :]
@@ -198,6 +200,7 @@ def _build_recent_history_text(messages: List[Dict[str, Any]], pairs: int) -> st
 
 
 def _compose_query(user_input: str) -> str:
+    """현재 질문 + 이전 대화 + 추가 지침을 합쳐 LLM에 넘길 최종 질문 문자열 생성"""
     user_input = (user_input or "").strip()
     history_txt = _build_recent_history_text(
         st.session_state["messages"], st.session_state["history_pairs"]
@@ -205,7 +208,6 @@ def _compose_query(user_input: str) -> str:
     prompt_txt = (st.session_state.get("user_prompt") or "").strip()
     parts: List[str] = []
 
-    # 현재 질문을 맨 앞에
     parts.append(f"[현재질문]\n{user_input}")
 
     if history_txt:
@@ -218,6 +220,7 @@ def _compose_query(user_input: str) -> str:
 
 
 def _render_user_bubble(content: str):
+    """사용자 메시지를 오른쪽 말풍선으로 렌더링"""
     escaped = html_lib.escape(content).replace("\n", "<br>")
     st.markdown(
         f"""<div class="user-bubble-wrap">
@@ -229,6 +232,7 @@ def _render_user_bubble(content: str):
 
 
 def _render_ai_bubble(content: str):
+    """AI 답변을 로고 이미지 + 마크다운 텍스트로 렌더링 (히스토리용)"""
     col_icon, col_text = st.columns([0.06, 0.93])
     with col_icon:
         st.image("src/Aviator_bot.png", width=60)
@@ -237,6 +241,7 @@ def _render_ai_bubble(content: str):
 
 
 def _stream_and_render(answer_r, state) -> str:
+    """answer_r.stream()으로 LLM 답변을 스트리밍하면서 실시간으로 렌더링. 완성된 전체 답변 반환"""
     col_icon, col_text = st.columns([0.06, 0.93])
     with col_icon:
         st.image("src/Aviator_bot.png", width=60)
@@ -251,6 +256,7 @@ def _stream_and_render(answer_r, state) -> str:
 
 
 def _render_hits_expander(filtered_hits: list, all_hits: list, key_prefix: str):
+    """출처 및 원문 expander 렌더링. 출처 탭엔 filtered_hits만, 원문 탭엔 all_hits 전부"""
     if not all_hits:
         return
     with st.expander("출처 및 원문", expanded=True):
@@ -259,7 +265,6 @@ def _render_hits_expander(filtered_hits: list, all_hits: list, key_prefix: str):
             if not filtered_hits:
                 st.caption("이 답변에 직접 활용된 출처 문서가 없습니다.")
             else:
-                # 유사도 필터링된 hits만 출처로 표시
                 seen = set()
                 for h in filtered_hits:
                     md = h.get("metadata", {}) or {}
@@ -287,7 +292,7 @@ def _render_hits_expander(filtered_hits: list, all_hits: list, key_prefix: str):
                     f"#{j} {file_name}"
                     + (f" / p.{page}" if page not in (None, "") else "")
                     + score_str
-                )  # ← 추가
+                )
                 st.markdown(f"**{title}**")
                 st.text_area(
                     label=f"hit_{j}",
@@ -334,7 +339,7 @@ if user_input:
     _render_user_bubble(user_input)
 
     if not is_document_query(user_input):
-        # 사내 문서와 무관한 질문 → LLM/검색 없이 거절
+        # 오프토픽 질문 → 검색 없이 거절 메시지 반환
         answer_accum = REFUSAL_MSG
         _render_ai_bubble(answer_accum)
         filtered_hits, scored_hits = [], []
@@ -342,7 +347,7 @@ if user_input:
         retrieve_r, answer_r = get_rag_parts(
             top_k=top_k, dense_k=dense_k, bm25_k=bm25_k, alpha=alpha
         )
-        # 짧거나 맥락 의존적인 질문은 히스토리 기반으로 재작성
+        # 짧거나 맥락 의존적인 질문은 이전 대화 기반으로 재작성
         history_txt = _build_recent_history_text(
             st.session_state["messages"][:-1], st.session_state["history_pairs"]
         )
@@ -371,7 +376,6 @@ if user_input:
         }
         answer_accum = _stream_and_render(answer_r, gen_state)
 
-        # 답변 임베딩 기반 출처 필터링
         filtered_hits, scored_hits = filter_sources_by_similarity(
             answer_accum, hits, threshold=source_threshold
         )

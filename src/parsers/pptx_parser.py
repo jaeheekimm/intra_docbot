@@ -10,16 +10,16 @@ from src.utils.hashing import sha1_short
 
 
 def _normalize_pptx_text(t: str) -> str:
-    # PPTX 텍스트는 줄바꿈/공백이 어색한 경우가 있어 가볍게 정리
+    """PPTX 텍스트의 줄바꿈/공백을 가볍게 정리"""
     s = (t or "").replace("\r\n", "\n").replace("\r", "\n")
     s = re.sub(r"[ \t]{2,}", " ", s).strip()
     return s
 
 
 def _extract_sorted_text_blocks(slide) -> List[Tuple[int, int, str]]:
-    """
-    슬라이드 내 텍스트 프레임들을 (top, left) 기준으로 정렬 가능한 형태로 추출.
-    return: [(top, left, text), ...]
+    """슬라이드 내 텍스트 프레임을 (top, left) 좌표 기준으로 정렬해서 반환.
+
+    반환: [(top, left, text), ...]
     """
     blocks: List[Tuple[int, int, str]] = []
     for shape in slide.shapes:
@@ -32,28 +32,27 @@ def _extract_sorted_text_blocks(slide) -> List[Tuple[int, int, str]]:
             left = int(getattr(shape, "left", 0) or 0)
             blocks.append((top, left, text))
 
-    blocks.sort(key=lambda x: (x[0], x[1]))  # 위->아래, 왼->오
+    blocks.sort(key=lambda x: (x[0], x[1]))  # 위→아래, 왼→오
     return blocks
 
 
 def _pick_title_from_blocks(
     blocks: List[Tuple[int, int, str]],
 ) -> Tuple[Optional[str], List[str]]:
-    """
-    매우 보수적 title 추정:
-    - 정렬된 첫 텍스트 중 "짧은" 텍스트를 title로 (<= 80자)
-    - title을 고르지 못하면 None
-    return: (title or None, body_texts)
+    """정렬된 블록 중 상단 텍스트를 보수적으로 title로 추정.
+
+    - 상위 5개 블록 중 80자 이하 텍스트를 title로 선택
+    - 못 고르면 None 반환
+    반환: (title or None, body_texts)
     """
     if not blocks:
         return None, []
 
     texts = [b[2] for b in blocks]
 
-    # title 후보: 첫 몇 개 중 짧고(<=80) 너무 길게 줄바꿈 없는 것
     title: Optional[str] = None
     title_idx: Optional[int] = None
-    for i, t in enumerate(texts[:5]):  # 상단 쪽 몇 개만 본다
+    for i, t in enumerate(texts[:5]):
         one_line = t.replace("\n", " ").strip()
         if 1 <= len(one_line) <= 80:
             title = one_line
@@ -68,20 +67,21 @@ def _pick_title_from_blocks(
 
 
 def extract_pptx_images(pptx_path: str, out_dir: str) -> Dict[int, List[str]]:
-    """
-    return: {slide_number(1-based): [image_path, ...]}
+    """PPTX에서 이미지 추출 후 out_dir에 저장.
+
+    반환: {슬라이드번호(1-based): [이미지경로, ...]}
+    - 1번 슬라이드 이미지 전부 스킵 (표지 로고 등)
+    - 2번 슬라이드부터는 오른쪽 위 코너 이미지만 스킵 (헤더 로고)
+      → 코너 기준: 가로 82%, 세로 18% 안쪽 영역
     """
     mapping: Dict[int, List[str]] = {}
 
     prs = Presentation(pptx_path)
     base = safe_filename(os.path.basename(pptx_path))
 
-    # 슬라이드 크기(EMU)
     sw, sh = prs.slide_width, prs.slide_height
-
-    # 오른쪽 위 코너 영역(비율) - 필요하면 숫자만 조절
-    RU_X = int(sw * 0.82)
-    RU_Y = int(sh * 0.18)
+    RU_X = int(sw * 0.82)  # 오른쪽 위 코너 기준 x (비율 조정 시 여기만)
+    RU_Y = int(sh * 0.18)  # 오른쪽 위 코너 기준 y
 
     for slide_idx, slide in enumerate(prs.slides, start=1):
         for shape in slide.shapes:
@@ -90,11 +90,9 @@ def extract_pptx_images(pptx_path: str, out_dir: str) -> Dict[int, List[str]]:
             ):
                 x, y = int(shape.left), int(shape.top)
 
-                # 1) 1번 슬라이드: 이미지 전부 제거
                 if slide_idx == 1:
                     continue
 
-                # 2) 2번부터: 오른쪽 위 코너 이미지만 제거
                 if slide_idx >= 2 and (x >= RU_X) and (y <= RU_Y):
                     continue
 
@@ -116,10 +114,11 @@ def extract_pptx_images(pptx_path: str, out_dir: str) -> Dict[int, List[str]]:
 
 
 def load_pptx_docs(pptx_path: str, ppt_img_map: Dict[int, List[str]]) -> List[Document]:
-    """
-    PPTX는 slide 단위 Document로 생성.
-    ✅ (top,left) 좌표 기준 텍스트 정렬
-    ✅ title을 metadata에 추가(원문 삭제 없이, title은 별도 필드로)
+    """PPTX를 슬라이드 단위 Document 리스트로 변환.
+
+    - 텍스트는 (top, left) 좌표 기준으로 정렬
+    - title은 metadata에 별도 저장 (본문에서 제거하지 않음)
+    - 텍스트도 이미지도 없는 슬라이드는 스킵
     """
     prs = Presentation(pptx_path)
     file_name = os.path.basename(pptx_path)
@@ -129,10 +128,8 @@ def load_pptx_docs(pptx_path: str, ppt_img_map: Dict[int, List[str]]) -> List[Do
         blocks = _extract_sorted_text_blocks(slide)
         title, body_texts = _pick_title_from_blocks(blocks)
 
-        # 본문 content: body_texts를 줄바꿈으로 합치기
         content = "\n".join([t for t in body_texts if t]).strip()
 
-        # 텍스트도 없고 이미지도 없으면 스킵
         if not title and not content and not ppt_img_map.get(slide_idx):
             continue
 
@@ -144,11 +141,10 @@ def load_pptx_docs(pptx_path: str, ppt_img_map: Dict[int, List[str]]) -> List[Do
             "slide": slide_idx,
             "sheet": None,
             "row": None,
-            "title": title,  # 추가
+            "title": title,
             "image_paths": ppt_img_map.get(slide_idx, []),
         }
 
-        # title만 있고 content가 비면 content는 빈 문자열로 두되 doc은 남김
         docs.append(Document(page_content=content, metadata=md))
 
     return docs
@@ -157,6 +153,7 @@ def load_pptx_docs(pptx_path: str, ppt_img_map: Dict[int, List[str]]) -> List[Do
 def pptx_image_manifest(
     pptx_path: str, ppt_img_map: Dict[int, List[str]]
 ) -> List[Dict[str, Any]]:
+    """슬라이드별 이미지 경로 정보를 image_manifest 포맷의 딕셔너리 리스트로 반환"""
     items: List[Dict[str, Any]] = []
     for slide, paths in ppt_img_map.items():
         for ip in paths:

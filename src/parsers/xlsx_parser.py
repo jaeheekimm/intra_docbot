@@ -22,29 +22,27 @@ SHEET_MODE_KEYWORDS = [
 
 
 def _guess_image_ext(img) -> str:
+    """openpyxl Image 객체에서 확장자를 추정. 실패하면 'bin' 반환.
+
+    openpyxl 버전마다 속성이 달라서 format → _format → path 순으로 시도.
     """
-    openpyxl Image 객체에서 확장자 추정.
-    케이스가 다양해서 '추정'만 하고, 실패하면 bin.
-    """
-    # 1) format / _format 같은 속성이 있는 경우
     fmt = getattr(img, "format", None) or getattr(img, "_format", None)
     if isinstance(fmt, str) and fmt.strip():
         return fmt.strip().lower().lstrip(".")
 
-    # 2) path에 확장자가 들어있는 경우
     path = getattr(img, "path", None)
     if isinstance(path, str) and "." in os.path.basename(path):
         ext = os.path.splitext(path)[1].lower().lstrip(".")
         if ext:
             return ext
 
-    # 3) 기본값
     return "bin"
 
 
 def extract_xlsx_images(xlsx_path: str, out_dir: str) -> Dict[str, List[str]]:
-    """
-    return: {sheet_name: [image_path, ...]}
+    """XLSX에서 이미지 추출 후 out_dir에 저장.
+
+    반환: {시트이름: [이미지경로, ...]}
     """
     mapping: Dict[str, List[str]] = {}
     wb = load_workbook(xlsx_path, data_only=True)
@@ -93,11 +91,10 @@ def extract_xlsx_images(xlsx_path: str, out_dir: str) -> Dict[str, List[str]]:
 
 
 def _pick_header_row(ws, max_scan_rows: int = 20) -> Tuple[int, List[str]]:
-    """
-    앞쪽에서 '헤더로 쓸만한 첫 행'을 찾는다.
-    - 완전 공백 행은 스킵
-    - 헤더 셀이 공백이면 A,B,C... 컬럼레터로 대체
-    return: (header_row_index(1-based), headers)
+    """상단 max_scan_rows 행 중 헤더로 쓸 첫 번째 비어있지 않은 행을 찾음.
+
+    - 빈 셀은 A, B, C... 컬럼 레터로 대체
+    반환: (헤더 행 인덱스(1-based), 헤더 리스트)
     """
     for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
         if r_idx > max_scan_rows:
@@ -117,9 +114,7 @@ def _pick_header_row(ws, max_scan_rows: int = 20) -> Tuple[int, List[str]]:
 
 
 def _row_to_text_with_headers(headers: List[str], values: Tuple[Any, ...]) -> str:
-    """
-    헤더 기반: "헤더: 값 | 헤더: 값" 형태
-    """
+    """행 값을 헤더 기반으로 "헤더: 값 | 헤더: 값" 형태 문자열로 변환"""
     parts: List[str] = []
     for i, v in enumerate(values):
         if i >= len(headers):
@@ -134,8 +129,11 @@ def _row_to_text_with_headers(headers: List[str], values: Tuple[Any, ...]) -> st
 
 
 def _expand_merged_cells(ws):
-    """병합 셀 값을 모든 셀에 복사"""
-    # 먼저 모든 병합 범위와 값을 저장
+    """병합 셀을 해제하고 병합 전 값을 모든 셀에 복사.
+
+    병합 상태에서 바로 unmerge하면 값이 사라지므로,
+    먼저 값을 저장해두고 해제 후 다시 채워넣는 순서가 중요.
+    """
     merge_data = []
     for merge_range in list(ws.merged_cells.ranges):
         top_left_value = ws.cell(merge_range.min_row, merge_range.min_col).value
@@ -149,11 +147,9 @@ def _expand_merged_cells(ws):
             )
         )
 
-    # 병합 전부 해제
     for merge_range in list(ws.merged_cells.ranges):
         ws.unmerge_cells(str(merge_range))
 
-    # 해제 후 값 채우기
     for min_row, max_row, min_col, max_col, value in merge_data:
         for r in range(min_row, max_row + 1):
             for c in range(min_col, max_col + 1):
@@ -170,26 +166,23 @@ def load_xlsx_docs_rows(
     max_rows_per_sheet: Optional[int] = None,
     header_scan_rows: int = 20,
 ) -> List[Document]:
-    """
-    XLSX 문서를 읽어 Document 리스트로 반환.
-    - 파일명에 신청서/양식 등 키워드 있거나 행 수가 적으면 → 시트 단위 Doc 1개
-    - 그 외 데이터가 많은 일반 표 → 행 단위 Doc
+    """XLSX를 Document 리스트로 변환.
+
+    시트 단위 모드: 파일명에 신청서/양식 등 키워드 있거나 비어있지 않은 행이 50개 미만인 경우.
+    행 단위 모드: 데이터가 많은 일반 표.
     """
     wb = load_workbook(xlsx_path, data_only=True)
     file_name = os.path.basename(xlsx_path)
     docs: List[Document] = []
 
-    # 파일명 기반 강제 시트 단위 여부
     force_sheet_mode = any(kw in file_name for kw in SHEET_MODE_KEYWORDS)
 
     for ws in wb.worksheets:
-        # 병합 셀 펼치기
         ws = _expand_merged_cells(ws)
 
         sheet_images = xlsx_img_map.get(ws.title, [])
         image_count = len(sheet_images)
 
-        # 실제 데이터 행 수 계산 (빈 행 제외)
         non_empty_rows = [
             row
             for row in ws.iter_rows(values_only=True)
@@ -198,14 +191,13 @@ def load_xlsx_docs_rows(
         row_count_actual = len(non_empty_rows)
 
         if force_sheet_mode or row_count_actual < SHEET_MODE_THRESHOLD:
-            # ── 시트 단위 모드 ──────────────────────────────
-            # 복잡한 표 구조(병합 셀, 양식 등)에서 유리
+            # ── 시트 단위 모드 (복잡한 양식/병합 표에 적합) ────────────────
 
             lines = []
             for row in non_empty_rows:
                 vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
                 if vals:
-                    # 행 내 중복 값 제거 (순서 유지)
+                    # 병합 셀 확장으로 생긴 행 내 중복 값 제거 (순서 유지)
                     seen_set = set()
                     unique_vals = []
                     for v in vals:
@@ -214,7 +206,6 @@ def load_xlsx_docs_rows(
                             seen_set.add(v)
                     lines.append(" | ".join(unique_vals))
 
-            # 중복 행 제거 (순서 유지)
             seen_lines = set()
             unique_lines = []
             for line in lines:
@@ -244,8 +235,7 @@ def load_xlsx_docs_rows(
             )
 
         else:
-            # ── 행 단위 모드 ────────────────────────────────
-            # 데이터가 많은 일반 표에서 유리
+            # ── 행 단위 모드 (데이터가 많은 일반 표에 적합) ──────────────────
             header_row_idx, headers = _pick_header_row(
                 ws, max_scan_rows=header_scan_rows
             )
@@ -289,7 +279,7 @@ def load_xlsx_docs_rows(
                 if max_rows_per_sheet and row_count >= max_rows_per_sheet:
                     break
 
-            # 시트에 텍스트 없고 이미지만 있으면 요약 Doc
+            # 텍스트 없고 이미지만 있으면 빈 content로 Doc 생성 (이미지 참조용)
             if row_count == 0 and sheet_images:
                 docs.append(
                     Document(
@@ -315,6 +305,7 @@ def load_xlsx_docs_rows(
 def xlsx_image_manifest(
     xlsx_path: str, xlsx_img_map: Dict[str, List[str]]
 ) -> List[Dict[str, Any]]:
+    """시트별 이미지 경로 정보를 image_manifest 포맷의 딕셔너리 리스트로 반환"""
     items: List[Dict[str, Any]] = []
     for sheet, paths in xlsx_img_map.items():
         for ip in paths:

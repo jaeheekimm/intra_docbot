@@ -12,12 +12,12 @@ load_dotenv()
 
 from src.utils.paths import CHROMA_DIR, CHROMA_COLLECTION as COLLECTION, BM25_PATH, EMBED_MODEL
 
-# ★ Kiwi는 한 번만 생성(매 호출마다 만들면 느림)
+# 매 호출마다 생성하면 느려서 전역으로 1회만 생성
 _KIWI = Kiwi()
 
 
 def _import_chroma():
-    # langchain-chroma가 있으면 그걸 우선 사용
+    """langchain_chroma → langchain_community 순으로 fallback"""
     try:
         from langchain_chroma import Chroma  # type: ignore
 
@@ -28,8 +28,8 @@ def _import_chroma():
         return Chroma
 
 
-# ★ bm25_index.py와 반드시 동일하게
 def tokenize(text: str) -> List[str]:
+    """Kiwi 형태소 분석으로 명사(N)/동사(V)만 추출. bm25_index.py와 동일한 로직 유지"""
     tokens = []
     for tok in _KIWI.tokenize(text):
         if tok.tag.startswith("N") or tok.tag.startswith("V"):
@@ -38,7 +38,7 @@ def tokenize(text: str) -> List[str]:
 
 
 def minmax_norm(scores: List[float]) -> List[float]:
-    """BM25 점수를 실제 값 기반으로 0~1 정규화. 점수 차이를 그대로 반영."""
+    """점수 리스트를 min-max 방식으로 0~1 정규화. 점수 차이를 그대로 반영"""
     if not scores:
         return scores
     min_s = min(scores)
@@ -49,18 +49,16 @@ def minmax_norm(scores: List[float]) -> List[float]:
 
 
 def rank_norm(scores: List[float], reverse: bool = True) -> List[float]:
-    """
-    순위 기반 정규화.
-    - reverse=True: 점수가 클수록 좋음
-    - reverse=False: 점수가 작을수록 좋음 (distance)
-    결과는 0~1 사이 값.
+    """순위 기반 정규화. 1등=1.0, 꼴찌=0.0
+
+    - reverse=True: 점수 클수록 좋음 (유사도)
+    - reverse=False: 점수 작을수록 좋음 (거리)
     """
     if not scores:
         return scores
 
     indexed = list(enumerate(scores))
 
-    # 정렬 기준
     if reverse:
         sorted_idx = sorted(indexed, key=lambda x: x[1], reverse=True)
     else:
@@ -70,7 +68,6 @@ def rank_norm(scores: List[float], reverse: bool = True) -> List[float]:
     out = [0.0] * n
 
     for rank, (orig_i, _) in enumerate(sorted_idx):
-        # 1등 = 1.0, 마지막 = 0.0
         if n == 1:
             out[orig_i] = 1.0
         else:
@@ -80,6 +77,7 @@ def rank_norm(scores: List[float], reverse: bool = True) -> List[float]:
 
 
 def safe_json_loads(x: Any) -> Any:
+    """문자열이면 JSON 파싱 시도. 실패하거나 문자열이 아니면 그대로 반환"""
     if isinstance(x, str):
         try:
             return json.loads(x)
@@ -99,7 +97,6 @@ class HybridRetriever:
         Chroma = _import_chroma()
         self.embeddings = OpenAIEmbeddings(model=embed_model)
 
-        # langchain_chroma 버전이면 persist_directory, community 버전이면 persist_directory가 맞음(둘 다 대응)
         self.db = Chroma(
             collection_name=collection,
             embedding_function=self.embeddings,
@@ -123,7 +120,7 @@ class HybridRetriever:
     def dense_search(
         self, query: str, k: int
     ) -> List[Tuple[str, str, Dict[str, Any], float]]:
-
+        """ChromaDB 코사인 거리 기반 dense 검색. 반환: [(chunk_id, text, meta, score)]"""
         embedding = self.embeddings.embed_query(query)
         results = self.db._collection.query(
             query_embeddings=[embedding],
@@ -135,7 +132,7 @@ class HybridRetriever:
         metas_list = results["metadatas"][0]
         dists_list = results["distances"][0]
 
-        # None page_content 필터링 (ChromaDB가 빈 문서를 None으로 반환하는 경우 대비)
+        # ChromaDB가 빈 문서를 None으로 반환하는 경우 대비
         filtered = [
             (doc, meta, dist)
             for doc, meta, dist in zip(docs_list, metas_list, dists_list)
@@ -145,7 +142,7 @@ class HybridRetriever:
             return []
 
         docs_f, metas_f, dists_f = zip(*filtered)
-        # 거리가 작을수록 유사도 높음 → minmax 후 반전
+        # 거리가 작을수록 유사도 높음 → 정규화 후 반전
         dense_scores = [1.0 - s for s in minmax_norm(list(dists_f))]
 
         out: List[Tuple[str, str, Dict[str, Any], float]] = []
@@ -165,6 +162,7 @@ class HybridRetriever:
     def bm25_search(
         self, query: str, k: int
     ) -> List[Tuple[str, str, Dict[str, Any], float]]:
+        """BM25 키워드 검색. 반환: [(chunk_id, text, meta, score)]"""
         q_tokens = tokenize(query)
         scores = list(map(float, self.bm25.get_scores(q_tokens)))
         scores_norm = minmax_norm(scores)
@@ -190,8 +188,9 @@ class HybridRetriever:
         bm25_k: int = 50,
         alpha: float = 0.6,
     ) -> List[Dict[str, Any]]:
-        """
-        alpha: dense 비중(0~1). 키워드가 더 중요하면 낮추기.
+        """dense + BM25 결과를 chunk_id 기준으로 병합해서 score = alpha*dense + (1-alpha)*bm25 계산
+
+        alpha: dense 비중(0~1). 키워드 검색 비중 높이려면 낮추기
         """
         dense = self.dense_search(query, dense_k)
         bm25 = self.bm25_search(query, bm25_k)
@@ -234,10 +233,7 @@ class HybridRetriever:
 
 
 def _source_dedup_key(md: Dict[str, Any]) -> str:
-    """
-    같은 출처(파일+페이지/슬라이드/행)에서 온 청크를 하나로 취급하기 위한 키.
-    hybrid_search에서 동일 페이지의 중복 청크를 제거할 때 사용.
-    """
+    """같은 출처(파일+페이지/슬라이드/행)에서 온 청크를 하나로 취급하기 위한 키"""
     source = md.get("source", "")
     doc_type = (md.get("doc_type") or "").lower()
     if doc_type == "pdf":
@@ -250,6 +246,7 @@ def _source_dedup_key(md: Dict[str, Any]) -> str:
 
 
 def format_source(md: Dict[str, Any]) -> str:
+    """metadata를 받아서 "파일명 p.3" 같은 출처 표시 문자열로 변환"""
     fn = md.get("file_name") or os.path.basename(md.get("source", ""))
     doc_type = (md.get("doc_type") or "").lower()
 

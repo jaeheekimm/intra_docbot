@@ -45,8 +45,11 @@ def clean_pdf_text(text: str) -> str:
 
 
 def extract_pdf_images(pdf_path: str, out_dir: str) -> Dict[int, List[str]]:
-    """
-    return: {page_number(1-based): [image_path, ...]}
+    """PDF에서 이미지 추출 후 out_dir에 저장.
+
+    반환: {페이지번호(1-based): [이미지경로, ...]}
+    - 150x150 미만 이미지(아이콘/장식)는 스킵
+    - 동일 xref 이미지는 한 번만 extract (중복 방지)
     """
     mapping: Dict[int, List[str]] = {}
     doc = fitz.open(pdf_path)
@@ -55,7 +58,6 @@ def extract_pdf_images(pdf_path: str, out_dir: str) -> Dict[int, List[str]]:
     MIN_W, MIN_H = 150, 150
     MIN_AREA = 150 * 150
 
-    # (옵션) 같은 xref 재사용 시 extract_image 중복 방지
     xref_cache: Dict[int, Dict[str, Any]] = {}
 
     for page_idx in range(len(doc)):
@@ -68,7 +70,6 @@ def extract_pdf_images(pdf_path: str, out_dir: str) -> Dict[int, List[str]]:
         for img_i, img in enumerate(images, start=1):
             xref = img[0]
 
-            # extract_image 1회
             if xref in xref_cache:
                 extracted = xref_cache[xref]
             else:
@@ -102,16 +103,17 @@ def extract_pdf_images(pdf_path: str, out_dir: str) -> Dict[int, List[str]]:
 
 
 def load_pdf_docs(pdf_path: str, pdf_img_map: Dict[int, List[str]]) -> List[Document]:
-    """
-    PDF는 page 단위 Document로 생성.
-    + page_content에 보수적 텍스트 정리(clean_pdf_text) 적용
+    """PDF를 페이지 단위 Document 리스트로 변환.
+
+    - 텍스트는 clean_pdf_text()로 정리
+    - 페이지 번호는 1-based로 통일
+    - 이미지 경로는 pdf_img_map에서 매핑
     """
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
 
     file_name = os.path.basename(pdf_path)
     for d in docs:
-        # ✅ 1) 텍스트 정리(보수적)
         d.page_content = clean_pdf_text(d.page_content)
 
         page0 = d.metadata.get("page", None)
@@ -136,6 +138,7 @@ def load_pdf_docs(pdf_path: str, pdf_img_map: Dict[int, List[str]]) -> List[Docu
 def pdf_image_manifest(
     pdf_path: str, pdf_img_map: Dict[int, List[str]]
 ) -> List[Dict[str, Any]]:
+    """페이지별 이미지 경로 정보를 image_manifest 포맷의 딕셔너리 리스트로 반환"""
     items: List[Dict[str, Any]] = []
     for page, paths in pdf_img_map.items():
         for ip in paths:

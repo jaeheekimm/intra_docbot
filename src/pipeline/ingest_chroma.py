@@ -16,36 +16,41 @@ import chromadb
 
 from src.utils.paths import OUT_JSONL as JSONL_PATH, CHROMA_DIR, CHROMA_COLLECTION as COLLECTION, EMBED_MODEL
 
+# 청킹 로직 바뀌면 올려야 함 (bm25_index.py도 같이)
 PIPELINE_VERSION = "v5"
 
-# PDF 기본 청킹
+# PDF: 400자, 80 overlap
 PDF_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=400,
     chunk_overlap=80,
     separators=["\n\n", "\n", " ", ""],
 )
 
-# PPT는 보통 슬라이드 단위가 짧아서 split 안 하는게 자연스러움.
-# 다만 슬라이드에 텍스트가 너무 길면만 안전장치로 split.
+# PPTX: 슬라이드 단위가 짧아서 기본은 split 안 함. 800자 넘으면 예외적으로 split.
 PPT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=500,
     chunk_overlap=60,
     separators=["\n\n", "\n", " ", ""],
 )
 
-PPT_SPLIT_THRESHOLD = 800  # 이 길이 넘으면 split
+PPT_SPLIT_THRESHOLD = 800
 
 
 def make_chunk_id(meta, text, local_idx):
+    """청크 고유 ID 생성. bm25_index.py와 반드시 동일해야 HybridRetriever에서 병합 가능
+
+    키: source | doc_type | page | slide | sheet | row | len(text) | text[:120]
+    """
     base = (
         f"{meta.get('source','')}|{meta.get('doc_type','')}|"
         f"{meta.get('page','')}|{meta.get('slide','')}|{meta.get('sheet','')}|{meta.get('row','')}|"
-        f"{len(text)}|{text[:120]}"  # ← local_idx 대신 len(text)
+        f"{len(text)}|{text[:120]}"
     )
     return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def load_docs_from_jsonl(path: str) -> List[Document]:
+    """JSONL 파일에서 Document 리스트 로드"""
     docs: List[Document] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -60,12 +65,17 @@ def load_docs_from_jsonl(path: str) -> List[Document]:
 
 
 def split_by_type(docs: List[Document]) -> List[Document]:
+    """doc_type에 따라 청킹 전략을 달리 적용.
+
+    - pdf: 항상 split
+    - pptx: 800자 넘을 때만 split (슬라이드 단위 유지 기본)
+    - xlsx: 이미 행 단위라 split 없음
+    """
     out: List[Document] = []
     for d in docs:
         doc_type = (d.metadata.get("doc_type") or "").lower()
         text = (d.page_content or "").strip()
 
-        # 텍스트 없는 건 벡터화 의미 없어서 skip
         if len(text) < 20:
             continue
 
@@ -79,7 +89,6 @@ def split_by_type(docs: List[Document]) -> List[Document]:
                 out.append(d)
 
         elif doc_type == "xlsx":
-            # 이미 행 단위라 split 안 함
             out.append(d)
 
         else:
@@ -89,9 +98,9 @@ def split_by_type(docs: List[Document]) -> List[Document]:
 
 
 def sanitize_metas(metas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Chroma metadata는 str/int/float/bool만 허용.
-    None 제거, dict/list 등 복잡 타입은 str로 변환.
+    """Chroma에 저장 가능한 타입(str/int/float/bool)으로 metadata를 정리
+
+    None 제거, dict/list 등은 str로 변환
     """
     cleaned: List[Dict[str, Any]] = []
     for m in metas:
@@ -109,6 +118,10 @@ def sanitize_metas(metas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def build_source_fingerprints(chunks):
+    """source(파일) 단위로 청크 텍스트를 합쳐 SHA1 fingerprint를 계산
+
+    PIPELINE_VERSION을 포함시켜, 청킹 로직 변경 시 버전만 올려도 강제 재인덱싱됨
+    """
     by_source = defaultdict(list)
     for c in chunks:
         src = c.metadata.get("source") or ""
@@ -125,28 +138,9 @@ def build_source_fingerprints(chunks):
     return fps
 
 
-# def build_source_fingerprints(chunks: List[Document]) -> Dict[str, str]:
-#     """
-#     source(파일) 단위로 전체 텍스트를 합쳐 fingerprint(sha1)을 만든다.
-#     - 내용이 바뀌면 fingerprint가 바뀌므로, 해당 source만 delete+readd 가능.
-#     """
-#     by_source: Dict[str, List[str]] = defaultdict(list)
-
-#     for c in chunks:
-#         src = c.metadata.get("source") or ""
-#         if not src:
-#             continue
-#         by_source[src].append((c.page_content or "").strip())
-
-#     fps: Dict[str, str] = {}
-#     for src, texts in by_source.items():
-#         joined = "\n".join(texts)
-#         fps[src] = hashlib.sha1(joined.encode("utf-8", errors="ignore")).hexdigest()
-
-#     return fps
-
 
 def main():
+    """JSONL 로드 → 청킹 → fingerprint 비교 → source 단위 증분 업데이트"""
     if not os.path.exists(JSONL_PATH):
         raise RuntimeError(
             f"{JSONL_PATH} 없음. 먼저 python -m src.pipeline.extract 실행"
@@ -154,18 +148,14 @@ def main():
 
     os.makedirs(CHROMA_DIR, exist_ok=True)
 
-    # 1) 로드 & 타입별 청킹
     docs = load_docs_from_jsonl(JSONL_PATH)
     chunks = split_by_type(docs)
-
-    # 2) source 단위 fingerprint 생성(변경 감지용)
     source_fp = build_source_fingerprints(chunks)
 
     texts: List[str] = []
     metas: List[Dict[str, Any]] = []
     ids: List[str] = []
 
-    # 3) chunk_id/source_fp 포함해서 적재 준비
     for i, c in enumerate(chunks):
         src = c.metadata.get("source")
         if src:
@@ -176,6 +166,8 @@ def main():
         doc_type = (c.metadata.get("doc_type") or "").lower()
         file_name = c.metadata.get("file_name") or ""
 
+        # embed_text에 title/파일명 prefix 붙여서 검색 품질 향상
+        # chunk_id는 embed_text 기준으로 계산 (bm25_index.py와 동일해야 함)
         if title and isinstance(title, str):
             embed_text = f"[TITLE] {title}\n{content}".strip()
         elif doc_type == "pdf" and file_name:
@@ -186,7 +178,6 @@ def main():
         if not embed_text:
             continue
 
-        # ← embed_text 만든 후에 chunk_id 계산 (bm25와 동일)
         cid = make_chunk_id(c.metadata, embed_text, i)
         c.metadata["chunk_id"] = cid
 
@@ -194,7 +185,7 @@ def main():
         metas.append(c.metadata)
         ids.append(cid)
 
-    # (추가) image_paths는 Chroma metadata에 넣지 말고 image_count로만 유지
+    # image_paths는 Chroma에 저장 불가(list 타입)라 image_count로만 유지
     for m in metas:
         if "image_paths" in m:
             ips = m.get("image_paths") or []
@@ -203,7 +194,6 @@ def main():
 
     metas = sanitize_metas(metas)
 
-    # 4) 임베딩/DB 연결
     embeddings = OpenAIEmbeddings(model=EMBED_MODEL)
     client = chromadb.PersistentClient(path=CHROMA_DIR)
 
@@ -213,9 +203,7 @@ def main():
         embedding_function=embeddings,
     )
 
-    # 5) 파일(source) 단위 업데이트:
-    #    - 기존 source_fp와 같으면 스킵
-    #    - 다르면 해당 source 문서들 delete 후 재적재
+    # source 단위 증분 업데이트: fingerprint 같으면 스킵, 다르면 삭제 후 재적재
     col = vectordb._collection
 
     sources = sorted({m.get("source") for m in metas if m.get("source")})
@@ -225,14 +213,12 @@ def main():
     skipped_sources = 0
 
     for src in sources:
-        # 이번 실행 fingerprint
         new_fp = None
         for m in metas:
             if m.get("source") == src:
                 new_fp = m.get("source_fp")
                 break
 
-        # DB fingerprint(1개만)
         old_fp = None
         try:
             got = col.get(where={"source": src}, include=["metadatas"], limit=1)
@@ -242,12 +228,10 @@ def main():
         except Exception:
             old_fp = None
 
-        # 변경 없으면 스킵
         if old_fp is not None and new_fp is not None and old_fp == new_fp:
             skipped_sources += 1
             continue
 
-        # 변경/신규면 기존 source 삭제 후 재적재
         try:
             col.delete(where={"source": src})
         except Exception:

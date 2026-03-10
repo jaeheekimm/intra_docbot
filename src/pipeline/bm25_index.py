@@ -21,7 +21,7 @@ kiwi = Kiwi()
 
 from src.utils.paths import OUT_JSONL as JSONL_PATH, BM25_PATH
 
-# ingest_chroma.py와 맞추기
+# ingest_chroma.py와 청킹 설정 반드시 동일하게 유지
 PDF_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=400,
     chunk_overlap=80,
@@ -35,10 +35,12 @@ PPT_SPLITTER = RecursiveCharacterTextSplitter(
 )
 PPT_SPLIT_THRESHOLD = 800
 
-PIPELINE_VERSION = "v5"  # ← 코드 수정했을 때만 v3, v4로 올림
+# 청킹 로직 바뀌면 올려야 함 (ingest_chroma.py도 같이)
+PIPELINE_VERSION = "v5"
 
 
 def load_docs_from_jsonl(path: str) -> List[Document]:
+    """JSONL 파일에서 Document 리스트 로드"""
     docs: List[Document] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -53,15 +55,20 @@ def load_docs_from_jsonl(path: str) -> List[Document]:
 
 
 def make_chunk_id(meta, text, local_idx):
+    """청크 고유 ID 생성. ingest_chroma.py와 반드시 동일해야 HybridRetriever에서 병합 가능
+
+    키: source | doc_type | page | slide | sheet | row | len(text) | text[:120]
+    """
     base = (
         f"{meta.get('source','')}|{meta.get('doc_type','')}|"
         f"{meta.get('page','')}|{meta.get('slide','')}|{meta.get('sheet','')}|{meta.get('row','')}|"
-        f"{len(text)}|{text[:120]}"  # ← local_idx 대신 len(text)
+        f"{len(text)}|{text[:120]}"
     )
     return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def tokenize(text):
+    """Kiwi 형태소 분석으로 명사(N)/동사(V)만 추출. retriever.py와 동일한 로직 유지"""
     tokens = []
     for tok in kiwi.tokenize(text):
         if tok.tag.startswith("N") or tok.tag.startswith("V"):
@@ -70,9 +77,9 @@ def tokenize(text):
 
 
 def sanitize_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Chroma/저장용으로 metadata를 단순 타입으로 정리.
-    (None 제거, list/dict는 JSON 문자열)
+    """pickle 저장용으로 metadata를 단순 타입으로 정리
+
+    None 제거, list/dict는 JSON 문자열로 변환
     """
     clean: Dict[str, Any] = {}
     for k, v in meta.items():
@@ -90,6 +97,7 @@ def sanitize_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def split_by_type(docs: List[Document]) -> List[Document]:
+    """ingest_chroma.py와 동일한 청킹 로직 (chunk_id 일치 필수)"""
     out: List[Document] = []
     for d in docs:
         doc_type = (d.metadata.get("doc_type") or "").lower()
@@ -106,7 +114,6 @@ def split_by_type(docs: List[Document]) -> List[Document]:
             else:
                 out.append(d)
         elif doc_type == "xlsx":
-            # 이미 행 단위
             out.append(d)
         else:
             out.extend(PDF_SPLITTER.split_documents([d]))
@@ -114,6 +121,7 @@ def split_by_type(docs: List[Document]) -> List[Document]:
 
 
 def build_source_fingerprints(chunks):
+    """source 단위로 fingerprint 계산. ingest_chroma.py와 동일 로직"""
     by_source = defaultdict(list)
     for c in chunks:
         src = c.metadata.get("source") or ""
@@ -131,6 +139,7 @@ def build_source_fingerprints(chunks):
 
 
 def main() -> None:
+    """JSONL 로드 → 청킹 → fingerprint 비교 → BM25 인덱스 생성/갱신"""
     if not os.path.exists(JSONL_PATH):
         raise RuntimeError(f"{JSONL_PATH} 없음. 먼저 extract 실행해서 jsonl 생성해.")
 
@@ -139,7 +148,7 @@ def main() -> None:
 
     source_fp = build_source_fingerprints(chunks)
 
-    # 기존 bm25_index.pkl이 있고, fingerprint가 같으면 재생성 생략
+    # 기존 pkl이 있고 fingerprint가 같으면 재생성 생략
     if os.path.exists(BM25_PATH):
         try:
             with open(BM25_PATH, "rb") as f:
@@ -161,6 +170,7 @@ def main() -> None:
         doc_type = (c.metadata.get("doc_type") or "").lower()
         file_name = c.metadata.get("file_name") or ""
 
+        # ingest_chroma.py와 동일하게 embed_text 구성 (chunk_id 일치 필수)
         if title and isinstance(title, str):
             text = f"[TITLE] {title}\n{text}".strip()
         elif doc_type == "pdf" and file_name:
@@ -177,7 +187,6 @@ def main() -> None:
         texts.append(text)
         metadatas.append(md)
 
-    # ⭐ 여기 추가
     if not texts:
         raise RuntimeError(
             f"BM25용 텍스트가 0개입니다. JSONL={JSONL_PATH} / docs={len(docs)} / chunks={len(chunks)}"

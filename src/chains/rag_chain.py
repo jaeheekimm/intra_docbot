@@ -1,5 +1,3 @@
-# src/chains/rag_chain.py
-
 import re
 from typing import Dict, Any, List
 
@@ -16,8 +14,9 @@ from src.utils.paths import LLM_MODEL
 
 
 def _build_context(hits: List[Dict[str, Any]], max_chars: int = 12000) -> str:
-    """
-    hits: retriever.hybrid_search 결과 리스트
+    """hybrid_search 결과를 "[출처]\n텍스트" 형태로 이어붙인 컨텍스트 문자열 생성
+
+    max_chars 초과하면 그 시점에서 중단
     """
     blocks = []
     total = 0
@@ -28,10 +27,6 @@ def _build_context(hits: List[Dict[str, Any]], max_chars: int = 12000) -> str:
         if not text:
             continue
 
-        # (선택) title을 컨텍스트에 노출하고 싶으면 아래 2줄 활성화
-        # title = (md.get("title") or "").strip()
-        # header = f"[{src}]\n(제목) {title}" if title else f"[{src}]"
-
         header = f"[{src}]"
         block = f"{header}\n{text}"
         if total + len(block) > max_chars:
@@ -40,18 +35,6 @@ def _build_context(hits: List[Dict[str, Any]], max_chars: int = 12000) -> str:
         total += len(block)
 
     return "\n\n".join(blocks)
-
-
-"""너는 사내 메뉴얼 문서 기반 AI 비서다.
-제공된 문서 내용만 근거로 답한다.
-
-[규칙]
-1) 문서에 없는 정보는 추측하지 않는다.
-2) 문서에 근거가 없으면, 자연스럽게 안내하되 내부 구조(컨텍스트, 문서 등)는 언급하지 않는다.
-3) 절차/방법/신청/설정/해결 요청은 단계적으로(1,2,3...) 작성한다.
-4) 질문의 비공식 표현은 사용하지 말고, 문서의 공식 명칭으로 정규화하여 답한다.
-5) 답변은 항목 또는 줄바꿈을 활용해 구조적으로 작성한다.
-   - 나열 정보는 쉼표로 길게 쓰지 말고 줄 단위로 구분한다."""
 
 
 def _make_prompt(question: str, context: str) -> str:
@@ -84,7 +67,7 @@ REFUSAL_MSG = (
     "복리후생·그룹웨어·시설 안내 등 사내 관련 내용을 질문해 주세요."
 )
 
-# 명백히 문서 검색과 무관한 요청 패턴 (이것만 차단, 나머지는 RAG로 전달)
+# 명백히 RAG와 무관한 요청만 차단 (작성/번역/창작/코드). 나머지는 RAG로 전달
 _OFFTOPIC_PATTERNS = [
     r"(이메일|메일|보고서|기획서|제안서|자기소개서|커버레터).{0,10}(써|작성|만들|써줘|작성해|만들어)",
     r"(번역|translate)\s*(해줘|해|줘|해주|해주세요)",
@@ -94,7 +77,7 @@ _OFFTOPIC_PATTERNS = [
 
 
 def is_document_query(question: str) -> bool:
-    """명백히 문서 외 요청(작성·번역·창작·코드)만 차단. 나머지는 RAG로 전달."""
+    """명백히 문서 외 요청(작성·번역·창작·코드)이면 False, 나머지는 True"""
     for pat in _OFFTOPIC_PATTERNS:
         if re.search(pat, question):
             return False
@@ -102,6 +85,10 @@ def is_document_query(question: str) -> bool:
 
 
 def get_rag_parts(*, top_k=5, dense_k=20, bm25_k=60, alpha=0.6):
+    """retrieve_r (검색 runnable)과 answer_r (LLM 답변 runnable)을 분리해서 반환
+
+    스트리밍을 위해 두 단계를 분리. app.py에서 retrieve_r.invoke() → answer_r.stream() 순으로 호출
+    """
     retriever = HybridRetriever()
     llm = ChatOpenAI(model=LLM_MODEL, temperature=0, streaming=True)
     parser = StrOutputParser()
@@ -134,7 +121,7 @@ def get_rag_parts(*, top_k=5, dense_k=20, bm25_k=60, alpha=0.6):
 
 
 def rewrite_query(user_input: str, history_txt: str) -> str:
-    """짧거나 맥락 의존적인 질문을 검색에 적합하게 재작성."""
+    """이전 대화 맥락을 바탕으로 질문을 독립적인 검색 쿼리로 재작성"""
     llm = ChatOpenAI(model=LLM_MODEL, temperature=0)
     prompt = f"""다음은 사내 문서 검색 챗봇과의 대화 이력과 현재 질문입니다.
 현재 질문이 이전 대화 맥락에 의존하거나 모호한 경우, 독립적으로 이해 가능한 검색 쿼리로 재작성하세요.
@@ -153,8 +140,16 @@ def rewrite_query(user_input: str, history_txt: str) -> str:
 def filter_sources_by_similarity(
     _answer: str, hits: list, threshold: float = 0.4
 ) -> tuple:
-    """
-    이미 계산된 hybrid score 기반 출처 필터링 (추가 API 호출 없음)
+    """출처 표시에 쓸 hits를 필터링해서 반환. 현재는 dense score 기준 1등만 표시.
+
+    출처 필터링 방식 변천사:
+    1. LLM한테 출처 추출 시켜보기 → 미시도
+    2. reranker 모델로 재순위 → 써봤는데 성능 더 떨어짐
+    3. 답변 임베딩과 청크 임베딩 코사인 유사도로 필터링 → 관련 없는 출처가 뜨는 경우 있었음
+    → 현재: 그냥 dense score 1등 1개만 출처로 표시. threshold 파라미터는 현재 미사용.
+
+    TODO: LLM한테 출처 뽑게 하는 것도 고민해볼 것. reranker는 더 좋은 모델로 재시도 여지 있음.
+    반환: (filtered_hits, all_scored_hits)
     """
     all_scored = []
     for h in hits:
