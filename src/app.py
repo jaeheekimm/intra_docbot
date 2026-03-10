@@ -163,7 +163,7 @@ with st.sidebar:
     )
     st.divider()
     st.header("출처 설정")
-    source_threshold = st.slider("출처 유사도 기준", 0.10, 0.90, 0.45, 0.05)
+    source_threshold = st.slider("출처 유사도 기준", 0.10, 0.90, 0.40, 0.05)
     st.divider()
     if st.button("대화내용 초기화"):
         st.session_state["messages"].clear()
@@ -253,7 +253,7 @@ def _stream_and_render(answer_r, state) -> str:
 def _render_hits_expander(filtered_hits: list, all_hits: list, key_prefix: str):
     if not all_hits:
         return
-    with st.expander("출처 및 원문", expanded=False):
+    with st.expander("출처 및 원문", expanded=True):
         tabs = st.tabs(["출처", "원문"])
         with tabs[0]:
             if not filtered_hits:
@@ -347,9 +347,12 @@ if user_input:
             st.session_state["messages"][:-1], st.session_state["history_pairs"]
         )
         _short = len(user_input) < 20
-        _has_pronoun = re.search(r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input)
+        _has_pronoun = re.search(
+            r"(그거|이거|거기|거기서|그쪽|이쪽|그게|이게)", user_input
+        )
         _has_context_dep = re.search(
-            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)", user_input
+            r"(신청|방법|절차|서류|기간|조건|담당자|어떻게|언제|얼마나|누가|어디)",
+            user_input,
         )
         if history_txt and (_short or _has_pronoun or _has_context_dep):
             search_query = rewrite_query(user_input, history_txt)

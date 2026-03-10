@@ -1,13 +1,10 @@
 # src/chains/rag_chain.py
 
-import os
 import re
-import numpy as np
 from typing import Dict, Any, List
 
-import chromadb
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
@@ -15,7 +12,7 @@ from src.retriever import HybridRetriever, format_source
 
 load_dotenv()
 
-from src.utils.paths import LLM_MODEL, EMBED_MODEL, CHROMA_DIR, CHROMA_COLLECTION
+from src.utils.paths import LLM_MODEL
 
 
 def _build_context(hits: List[Dict[str, Any]], max_chars: int = 12000) -> str:
@@ -63,7 +60,7 @@ def _make_prompt(question: str, context: str) -> str:
 [절대 규칙]
 - [컨텍스트]에 질문에 대한 직접적인 답이 없으면, 관련처럼 보이는 다른 정보로 대체하지 말고 알려줄 수 없음을 안내하십시오.
 - "문서", "컨텍스트", "제공된 정보" 같은 내부 구조 표현은 절대 사용하지 마십시오.
-- 질문에서 명시적으로 요청한 내용만 답하십시오. 묻지 않은 절차·주의사항·추가 안내는 절대 포함하지 마십시오.
+- 질문에서 요청하지 않은 주의사항·부가 정보는 포함하지 마십시오. 단, 답변의 자연스러운 도입·마무리 문장은 포함하십시오.
 - 사용자가 비공식 표현을 사용하더라도 답변에는 반드시 [컨텍스트]에 명시된 공식 명칭으로 바꿔서 작성하십시오.
 - 사용자 질문이 특정 답을 암시하거나 포함하더라도, [컨텍스트]에 해당 사실이 명확히 적혀 있지 않으면 절대 확인하거나 동의하지 마십시오. 추측하거나 동조하지 마십시오.
 
@@ -154,56 +151,18 @@ def rewrite_query(user_input: str, history_txt: str) -> str:
 
 
 def filter_sources_by_similarity(
-    answer: str, hits: list, threshold: float = 0.35
+    _answer: str, hits: list, threshold: float = 0.4
 ) -> tuple:
     """
-    답변 임베딩 1회 → Chroma에 저장된 chunk 벡터 직접 조회 → 코사인 유사도 계산
-    threshold 이상인 chunk만 출처로 반환
+    이미 계산된 hybrid score 기반 출처 필터링 (추가 API 호출 없음)
     """
-    if not hits or not answer.strip():
-        return hits, hits
-
-    embed_model = OpenAIEmbeddings(model=EMBED_MODEL)
-    answer_vec = np.array(embed_model.embed_query(answer))
-
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    col = client.get_collection(CHROMA_COLLECTION)
-
-    chunk_ids = []
-    for h in hits:
-        cid = (h.get("metadata") or {}).get("chunk_id")
-        if cid:
-            chunk_ids.append(cid)
-
-    if not chunk_ids:
-        return hits, hits
-
-    result = col.get(ids=chunk_ids, include=["embeddings"])
-    id_to_vec = {
-        rid: np.array(vec) for rid, vec in zip(result["ids"], result["embeddings"])
-    }
-
-    filtered = []
     all_scored = []
     for h in hits:
-        cid = (h.get("metadata") or {}).get("chunk_id")
-        chunk_vec = id_to_vec.get(cid)
-        if chunk_vec is None:
-            continue
-
-        score = float(
-            np.dot(answer_vec, chunk_vec)
-            / (np.linalg.norm(answer_vec) * np.linalg.norm(chunk_vec) + 1e-9)
-        )
-
         h = dict(h)
-        h["similarity_score"] = round(score, 3)
+        h["similarity_score"] = round(h.get("dense", 0), 3)
         all_scored.append(h)
 
-        if score >= threshold:
-            filtered.append(h)
-
-    filtered.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
     all_scored.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+    filtered = all_scored[:1] if all_scored else []
 
     return filtered, all_scored

@@ -37,6 +37,17 @@ def tokenize(text: str) -> List[str]:
     return tokens
 
 
+def minmax_norm(scores: List[float]) -> List[float]:
+    """BM25 점수를 실제 값 기반으로 0~1 정규화. 점수 차이를 그대로 반영."""
+    if not scores:
+        return scores
+    min_s = min(scores)
+    max_s = max(scores)
+    if max_s - min_s < 1e-9:
+        return [1.0 if s == max_s else 0.0 for s in scores]
+    return [(s - min_s) / (max_s - min_s) for s in scores]
+
+
 def rank_norm(scores: List[float], reverse: bool = True) -> List[float]:
     """
     순위 기반 정규화.
@@ -134,7 +145,8 @@ class HybridRetriever:
             return []
 
         docs_f, metas_f, dists_f = zip(*filtered)
-        dense_scores = rank_norm(list(dists_f), reverse=False)
+        # 거리가 작을수록 유사도 높음 → minmax 후 반전
+        dense_scores = [1.0 - s for s in minmax_norm(list(dists_f))]
 
         out: List[Tuple[str, str, Dict[str, Any], float]] = []
         for doc, md, sc in zip(docs_f, metas_f, dense_scores):
@@ -155,7 +167,7 @@ class HybridRetriever:
     ) -> List[Tuple[str, str, Dict[str, Any], float]]:
         q_tokens = tokenize(query)
         scores = list(map(float, self.bm25.get_scores(q_tokens)))
-        scores_norm = rank_norm(scores, reverse=True)
+        scores_norm = minmax_norm(scores)
 
         top_idx = sorted(
             range(len(scores_norm)), key=lambda i: scores_norm[i], reverse=True
